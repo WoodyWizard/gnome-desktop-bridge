@@ -1,78 +1,66 @@
 # GNOME Desktop Bridge
 
-Локальный, управляемый пользователем мост для наблюдения, отладки и автоматизации
-GNOME Desktop на Wayland. Проект даёт локальному AI-клиенту или диагностическому
-скрипту семантический доступ к интерфейсу приложений через AT-SPI и, только после
-явного согласия пользователя в системном диалоге GNOME, управление указателем и
-клавиатурой через XDG Desktop Portal.
+A local, user-managed bridge for observing, debugging, and automating the GNOME Desktop on Wayland. The project provides a local AI client or diagnostic script with semantic access to application interfaces via AT-SPI, and, only after explicit user consent in the GNOME system dialog, control of the pointer and keyboard through the XDG Desktop Portal.
 
-> **Статус:** рабочий MVP, рассчитанный на GNOME 50 / Fedora 44 и Python 3.11+.
-> По умолчанию всё выключено. Это мощный инструмент, а не граница безопасности
-> между недоверенными процессами одного Linux-пользователя.
+> **Status:** working MVP for GNOME 50 / Fedora 44 and Python 3.11+.
+> By default, everything is disabled. This is a powerful tool, not a security boundary
+> between untrusted processes running as the same Linux user.
 
-## Коротко о возможностях
+## Capabilities at a Glance
 
-- локальный HTTP/JSON API на `127.0.0.1:18766`;
-- постоянный случайный bearer-токен с правами файла `0600`;
-- четыре режима: `Off`, `Observe`, `Control selected apps`, `ALL DESKTOP`;
-- allowlist приложений для обычного Control-режима;
-- чтение семантического дерева окон через AT-SPI;
-- поиск ролей, названий, состояния, bounds, текста и доступных действий элементов;
-- вызов нативных AT-SPI actions, фокус и заполнение editable-полей;
-- автоматическая маскировка AT-SPI password fields;
-- скриншоты через XDG Screenshot portal;
-- глобальные клики, движение мыши, скролл, клавиши и ввод текста через
-  XDG RemoteDesktop portal;
-- запуск `.desktop`-приложений через отдельный transient systemd unit;
-- журнал команд в памяти и SSE-поток событий в реальном времени;
-- нативная GTK/libadwaita панель управления;
-- аварийный `STOP ALL`, который закрывает portal-сессию и возвращает режим `Off`;
-- systemd user service с hardening-настройками;
-- CLI для человека и автоматизированного клиента.
+- local HTTP/JSON API on `127.0.0.1:18766`;
+- persistent random bearer token with file permissions `0600`;
+- four modes: `Off`, `Observe`, `Control selected apps`, `ALL DESKTOP`;
+- allowlist of applications for normal Control mode;
+- reading semantic window trees through AT-SPI;
+- searching for roles, names, states, bounds, text, and available actions of elements;
+- invoking native AT-SPI actions, focusing elements, and filling editable fields;
+- automatic masking of AT-SPI password fields;
+- screenshots through the XDG Screenshot portal;
+- global clicks, mouse movement, scroll, keys, and text input through the XDG RemoteDesktop portal;
+- launching `.desktop` applications via a separate transient systemd unit;
+- command log in memory and SSE event stream in real-time;
+- native GTK/libadwaita control panel;
+- emergency `STOP ALL`, which closes the portal session and returns to mode `Off`;
+- systemd user service with hardening settings;
+- CLI for human users and automated clients.
 
-## Что проект принципиально не делает
+## What the Project Deliberately Does Not Do
 
-- не обходит Wayland и системный диалог разрешений GNOME;
-- не получает root и не выполняет команды shell через API;
-- не управляет экраном входа, заблокированной сессией или другим Linux-пользователем;
-- не читает произвольную память процессов;
-- не получает внутренние логи других приложений или расширений автоматически —
-  только то, что они показывают через AT-SPI, на экране или в обычных файлах/журналах,
-  к которым уже имеет доступ текущий пользователь;
-- не открывает API в LAN;
-- не разрешает сайтам обращаться к API через CORS;
-- не позволяет API-клиенту самостоятельно включить более опасный режим доступа.
+- does not bypass Wayland or GNOME permission dialogs;
+- does not obtain root or execute shell commands through the API;
+- does not control the login screen, a locked session, or another Linux user;
+- does not read arbitrary process memory;
+- does not automatically obtain internal logs of other applications or extensions — only what they display via AT-SPI, on the screen, or in normal files/logs to which the current user already has access;
+- does not expose the API to the LAN;
+- does not allow websites to access the API through CORS;
+- does not permit the API client to enable a more dangerous access mode by itself.
 
-## Модель доступа
+## Access Model
 
-| Режим | Чтение UI | Скриншот | AT-SPI actions | Область приложения | Глобальные input events |
+| Mode | UI Reading | Screenshot | AT-SPI Actions | Application Scope | Global Input Events |
 |---|---:|---:|---:|---|---:|
-| `off` | нет | нет | нет | — | нет |
-| `observe` | да | по feature-gate | нет | любое видимое AT-SPI приложение | нет |
-| `control` | да | по feature-gate | да | только `allowedApps` | нет |
-| `all` | да | по feature-gate | да | весь desktop | только по отдельному feature-gate и portal consent |
+| `off` | no | no | no | — | no |
+| `observe` | yes | by feature-gate | no | any visible AT-SPI application | no |
+| `control` | yes | by feature-gate | yes | only `allowedApps` | no |
+| `all` | yes | by feature-gate | yes | entire desktop | only by separate feature-gate and portal consent |
 
-Команды `ping`, `capabilities`, `get_state` и `stop_all` доступны при любом режиме,
-но требуют токен. Единственный публичный endpoint — минимальный `/health`.
+Commands `ping`, `capabilities`, `get_state`, and `stop_all` are available in any mode, but require a token. The only public endpoint is the minimal `/health`.
 
-### Почему существуют и режим, и feature-gate
+### Why Both Mode and Feature-Gate Exist
 
-Разрешение проверяется в двух местах. Например, глобальный клик требует одновременно:
+Permission is checked in two places. For example, a global click requires:
 
 1. `accessMode: "all"`;
 2. `allowPortalInput: true`;
-3. активную RemoteDesktop-сессию, которую пользователь подтвердил в диалоге GNOME;
-4. фактически выданное portal-разрешение на pointer.
+3. an active RemoteDesktop session that the user has confirmed in the GNOME dialog;
+4. actual portal permission for pointer.
 
-Изменение настроек на более безопасные автоматически закрывает активную portal-сессию
-не позднее чем через одну секунду. Это делает переключатель в Control Center настоящим
-revoke-механизмом, а не только настройкой для следующего запроса.
+Changing the settings to a safer configuration automatically closes the active portal session within one second. This makes the switch in Control Center a true revocation mechanism, not merely a setting for the next request.
 
-`ALL DESKTOP` дополнительно является session-scoped: после crash, logout, reboot или
-ручного restart daemon он автоматически сбрасывается в `Off`, а global-input gate
-выключается. `Observe` и scoped `Control` могут сохраняться между перезапусками.
+`ALL DESKTOP` is additionally session-scoped: after crash, logout, reboot, or manual daemon restart, it automatically resets to `Off`, and the global-input gate is turned off. `Observe` and scoped `Control` can persist across restarts.
 
-## Архитектура
+## Architecture
 
 ```text
 AI / CLI / diagnostic process
@@ -97,20 +85,18 @@ GNOME Desktop Bridge Control Center
           +-- can always invoke STOP ALL
 ```
 
-Решение намеренно не является GNOME Shell extension. Основная логика работает как
-обычный user service: это проще тестировать, обновлять и изолировать. Shell indicator
-можно добавить позже как необязательный визуальный frontend.
+The solution is intentionally not a GNOME Shell extension. The main logic operates as a regular user service: this is simpler to test, update, and isolate. A shell indicator can be added later as an optional visual frontend.
 
 ### Backends
 
-- **AT-SPI 2** — семантическое дерево, roles, states, text, actions, focus, editable text.
-- **XDG Screenshot portal** — снимок выбранного/разрешённого системной политикой экрана.
-- **XDG RemoteDesktop + ScreenCast portals** — системный consent, pointer/keyboard events,
-  stream geometry для нескольких мониторов.
-- **Gio AppInfo** — список desktop launchers.
-- **systemd-run + gtk-launch** — запуск приложения вне sandbox namespace демона.
+- **AT-SPI 2** — semantic tree, roles, states, text, actions, focus, editable text.
+- **XDG Screenshot portal** — screenshots of the screen selected or permitted by system policy.
+- **XDG RemoteDesktop + ScreenCast portals** — system consent, pointer/keyboard events,
+  stream geometry for multiple monitors.
+- **Gio AppInfo** — list of desktop launchers.
+- **systemd-run + gtk-launch** — application launch outside the sandbox namespace of the daemon.
 
-Официальные спецификации:
+Official specifications:
 
 - [RemoteDesktop portal](https://flatpak.github.io/xdg-desktop-portal/docs/doc-org.freedesktop.portal.RemoteDesktop.html)
 - [ScreenCast portal](https://flatpak.github.io/xdg-desktop-portal/docs/doc-org.freedesktop.portal.ScreenCast.html)
@@ -119,29 +105,29 @@ GNOME Desktop Bridge Control Center
 - [AT-SPI Action](https://gnome.pages.gitlab.gnome.org/at-spi2-core/libatspi/iface.Action.html)
 - [AT-SPI EditableText](https://gnome.pages.gitlab.gnome.org/at-spi2-core/libatspi/iface.EditableText.html)
 
-## Требования
+## Requirements
 
-Типичная Fedora Workstation с GNOME уже содержит всё необходимое:
+A typical Fedora Workstation with GNOME already includes everything necessary:
 
 - GNOME + Wayland;
 - Python 3.11+;
 - PyGObject;
 - `at-spi2-core`;
-- `xdg-desktop-portal` и `xdg-desktop-portal-gnome`;
+- `xdg-desktop-portal` and `xdg-desktop-portal-gnome`;
 - systemd user manager;
 - `gtk-launch`;
-- GTK 4 и libadwaita для Control Center.
+- GTK 4 and libadwaita for Control Center.
 
-Проверка на Fedora:
+Verification on Fedora:
 
 ```bash
 python3 -c 'import gi; gi.require_version("Atspi", "2.0")'
 rpm -q at-spi2-core xdg-desktop-portal xdg-desktop-portal-gnome python3-gobject
 ```
 
-## Установка
+## Installation
 
-Из корня проекта:
+From the project root:
 
 ```bash
 chmod +x scripts/*.sh
@@ -150,95 +136,92 @@ chmod +x scripts/*.sh
 
 Installer:
 
-1. создаёт безопасные config/data directories;
-2. создаёт настройки в режиме `Off`;
-3. один раз генерирует токен;
-4. создаёт symlink-команды в `~/.local/bin`;
-5. устанавливает systemd user unit и desktop entry;
-6. запускает daemon.
+1. creates secure config/data directories;
+2. creates settings in `Off` mode;
+3. generates a token once;
+4. creates symlink commands in `~/.local/bin`;
+5. installs systemd user unit and desktop entry;
+6. starts the daemon.
 
-Повторный запуск installer также выполняет fail-closed `access off`, поэтому update не
-может незаметно сохранить ранее включённый `ALL DESKTOP`.
+Re-running the installer also forces fail-closed `access off`, so an update cannot silently preserve a previously enabled `ALL DESKTOP` mode.
 
-Открыть панель:
+Open the panel:
 
 ```bash
 gnome-desktop-bridge-control
 ```
 
-Проверить daemon:
+Check the daemon:
 
 ```bash
 systemctl --user status gnome-desktop-bridge
 gnome-desktop-bridge-cli status
 ```
 
-Удаление без удаления токена и настроек:
+Uninstall without deleting the token and settings:
 
 ```bash
 ./scripts/uninstall-user.sh
 ```
 
-Полное удаление локальных данных, screenshots и токена:
+Complete removal of local data, screenshots, and token:
 
 ```bash
 ./scripts/uninstall-user.sh --purge
 ```
 
-## Первый безопасный запуск
+## First Secure Launch
 
-1. Откройте **GNOME Desktop Bridge**.
-2. Выберите `Observe`.
-3. Оставьте `Redact protected text` включённым.
-4. Нажмите **Apply**.
-5. Проверьте `list_apps` и один snapshot.
-6. Для действий выберите `Control selected apps` и укажите allowlist, например
+1. Open **GNOME Desktop Bridge**.
+2. Select `Observe`.
+3. Leave `Redact protected text` enabled.
+4. Click **Apply**.
+5. Check `list_apps` and one snapshot.
+6. For actions, select `Control selected apps` and specify the allowlist, for example
    `org.mozilla.firefox, Firefox`.
-7. Используйте `ALL DESKTOP` только на время задачи.
-8. Для глобальных кликов включите `Global pointer and keyboard`, сохраните настройки,
-   нажмите **Start session** и подтвердите системный диалог GNOME.
-9. После задачи нажмите **STOP ALL**.
+7. Use `ALL DESKTOP` only during the task.
+8. To enable global clicks, turn on `Global pointer and keyboard`, save the settings,
+   click **Start session** and confirm the GNOME system dialog.
+9. After the task, click **STOP ALL**.
 
-## Локальные файлы
+## Local Files
 
-По умолчанию:
+By default:
 
-| Назначение | Путь | Права |
+| Purpose | Path | Permissions |
 |---|---|---:|
-| Настройки | `~/.config/gnome-desktop-bridge/settings.json` | `0600` |
+| Settings | `~/.config/gnome-desktop-bridge/settings.json` | `0600` |
 | Bearer token | `~/.local/share/gnome-desktop-bridge/token` | `0600` |
 | Portal restore token | `~/.local/share/gnome-desktop-bridge/portal-restore-token` | `0600` |
-| Скриншоты | `~/.local/share/gnome-desktop-bridge/screenshots/` | dir `0700`, files `0600` |
+| Screenshots | `~/.local/share/gnome-desktop-bridge/screenshots/` | dir `0700`, files `0600` |
 | Runtime lock | `$XDG_RUNTIME_DIR/gnome-desktop-bridge/daemon.lock` | `0600` |
 
-Учитываются `XDG_CONFIG_HOME`, `XDG_DATA_HOME` и `XDG_RUNTIME_DIR`.
+The bridge honors `XDG_CONFIG_HOME`, `XDG_DATA_HOME`, and `XDG_RUNTIME_DIR`.
 
-### Постоянство токена
+### Token Persistence
 
-Токен генерируется только при отсутствии token file. Перезапуск daemon, GNOME или всего
-компьютера его не меняет. Он изменится только после ручной rotation или удаления файла.
+The token is generated only if the token file does not exist. Restarting the daemon, GNOME, or the entire computer does not change it. It will only change after manual rotation or deletion of the file.
 
-Показать токен:
+Show the token:
 
 ```bash
 gnome-desktop-bridge-cli token
 ```
 
-Rotate и затем перезапустить daemon:
+Rotate and then restart the daemon:
 
 ```bash
 gnome-desktop-bridge-cli token --rotate
 systemctl --user restart gnome-desktop-bridge
 ```
 
-Не помещайте токен в Git, screenshots, issue reports или shell history. Для `curl` лучше
-прочитать его из файла в переменную текущего shell:
+Do not place the token in Git, screenshots, issue reports, or shell history. For `curl`, it is better to read it from the file into a variable of the current shell:
 
 ```bash
 TOKEN="$(<~/.local/share/gnome-desktop-bridge/token)"
 ```
 
-### Формат settings.json
+### Format of settings.json
 
 ```json
 {
@@ -256,11 +239,9 @@ TOKEN="$(<~/.local/share/gnome-desktop-bridge/token)"
 }
 ```
 
-`host` принимает только loopback (`127.0.0.1`, `::1`, `localhost`). Изменение host/port
-требует restart, остальные значения daemon подхватывает автоматически.
+`host` accepts only loopback (`127.0.0.1`, `::1`, `localhost`). Changing host/port requires a restart; other daemon values are automatically picked up.
 
-`allowedApps` — case-insensitive shell globs, сопоставляемые с AT-SPI application name,
-application ID, toolkit name и PID. Рекомендуется desktop/application ID, а не PID.
+`allowedApps` contains case-insensitive shell-style globs matched against the AT-SPI application name, application ID, toolkit name, and PID. Prefer a desktop/application ID over a PID.
 
 ## HTTP API
 
@@ -268,20 +249,20 @@ application ID, toolkit name и PID. Рекомендуется desktop/applicat
 
 - base URL: `http://127.0.0.1:18766`;
 - JSON UTF-8;
-- максимальное тело POST: 1 MiB;
-- `Content-Type: application/json` обязателен;
-- неизвестные top-level fields и action arguments отклоняются, а не игнорируются;
-- все `/api/*` требуют `Authorization: Bearer <token>`;
-- CORS намеренно отсутствует;
-- responses содержат `Cache-Control: no-store`.
+- maximum POST body size: 1 MiB;
+- `Content-Type: application/json` is required;
+- unknown top-level fields and action arguments are rejected, not ignored;
+- all `/api/*` require `Authorization: Bearer <token>`;
+- CORS is intentionally absent;
+- responses contain `Cache-Control: no-store`.
 
-Успех:
+Success:
 
 ```json
 {"ok": true, "result": {}}
 ```
 
-Ошибка:
+Error:
 
 ```json
 {
@@ -294,21 +275,21 @@ application ID, toolkit name и PID. Рекомендуется desktop/applicat
 }
 ```
 
-Типичные error codes: `unauthorized`, `invalid_request`, `access_denied`, `not_found`,
+Typical error codes: `unauthorized`, `invalid_request`, `access_denied`, `not_found`,
 `stale_reference`, `backend_unavailable`, `portal_cancelled`, `portal_denied`,
 `device_not_granted`, `internal_error`.
 
 ### Endpoints
 
-| Method | Path | Auth | Назначение |
+| Method | Path | Auth | Purpose |
 |---|---|---:|---|
-| `GET` | `/health` | нет | минимальный liveness check |
-| `GET` | `/api/status` | да | режим, feature gates, portal state |
-| `POST` | `/api/command` | да | выполнить одну команду |
-| `GET` | `/api/events?after=0&limit=200` | да | получить audit events |
-| `GET` | `/api/events/stream?after=0` | да | Server-Sent Events stream |
+| `GET` | `/health` | no | minimal liveness check |
+| `GET` | `/api/status` | yes | mode, feature gates, portal state |
+| `POST` | `/api/command` | yes | execute one command |
+| `GET` | `/api/events?after=0&limit=200` | yes | get audit events |
+| `GET` | `/api/events/stream?after=0` | yes | Server-Sent Events stream |
 
-Форма команды:
+Command format:
 
 ```json
 {
@@ -322,7 +303,7 @@ application ID, toolkit name и PID. Рекомендуется desktop/applicat
 }
 ```
 
-Пример `curl`:
+`curl` example:
 
 ```bash
 curl --fail-with-body \
@@ -332,13 +313,13 @@ curl --fail-with-body \
   http://127.0.0.1:18766/api/command
 ```
 
-## Полный каталог команд
+## Full Command Catalog
 
-### Всегда разрешённые после authentication
+### Always Allowed After Authentication
 
 #### `ping`
 
-Проверка request path и версии daemon.
+Checks the request path and daemon version.
 
 ```json
 {"action":"ping","args":{}}
@@ -346,8 +327,7 @@ curl --fail-with-body \
 
 #### `capabilities`
 
-Возвращает версии и доступность AT-SPI/portal, режимы и список actions. Это первая
-команда, которую должен вызывать новый AI-клиент.
+Returns versions and availability of AT-SPI/portal, modes, and list of actions. This is the first command that a new AI client must call.
 
 ```json
 {"action":"capabilities","args":{}}
@@ -355,7 +335,7 @@ curl --fail-with-body \
 
 #### `get_state`
 
-Возвращает текущую policy и RemoteDesktop state, но никогда не возвращает токен.
+Returns current policy and RemoteDesktop state, but never returns a token.
 
 ```json
 {"action":"get_state","args":{}}
@@ -365,30 +345,28 @@ curl --fail-with-body \
 
 Fail-closed emergency operation:
 
-- закрывает RemoteDesktop portal session;
-- устанавливает `accessMode: off`;
-- устанавливает `allowPortalInput: false`;
-- добавляет `security.stop_all` в audit.
+- closes the RemoteDesktop portal session;
+- sets `accessMode: off`;
+- sets `allowPortalInput: false`;
+- adds `security.stop_all` to audit.
 
-Result содержит `settingsPersisted`. Даже если filesystem не позволяет сохранить файл,
-daemon немедленно удерживает fail-closed `Off` в памяти и сообщает `false` вместо того,
-чтобы снова разрешить команды по старой policy.
+Result contains `settingsPersisted`. Even if the filesystem does not allow saving the file, the daemon immediately retains the fail-closed `Off` in memory and reports `false` instead of re-enabling commands under the old policy.
 
 ```json
 {"action":"stop_all","args":{}}
 ```
 
-### Observe или выше
+### Observe or Higher
 
 #### `list_apps`
 
-Возвращает AT-SPI applications и refs:
+Returns AT-SPI applications and refs:
 
 ```json
 {"action":"list_apps","args":{}}
 ```
 
-Сокращённый результат:
+Abbreviated result:
 
 ```json
 {
@@ -409,11 +387,11 @@ daemon немедленно удерживает fail-closed `Off` в памят
 
 #### `snapshot`
 
-Читает дерево выбранного application/window/widget.
+Reads the tree of the selected application/window/widget.
 
 Arguments:
 
-- `ref` — required ref из текущей generation;
+- `ref` — required ref from the current generation;
 - `depth` — `0..30`, default `8`;
 - `maxNodes` — `1..5000`, default `1000`;
 - `includeText` — default `true`.
@@ -425,35 +403,32 @@ Arguments:
 }
 ```
 
-Каждый node может содержать:
+Each node may contain:
 
 - `ref`, `name`, `role`, `description`;
 - `states`, `interfaces`, `childCount`;
 - `bounds: {x,y,width,height}`;
 - `actions: [{index,name,description,keyBinding}]`;
 - `text`, `value`;
-- `protected: true` и `text: "[REDACTED]"` для password role;
+- `protected: true` and `text: "[REDACTED]"` for password role;
 - nested `children`.
 
-Для защиты daemon один text node ограничен 4096 characters, а общий text budget одного
-snapshot — 256 000 characters; усечённый node получает `textTruncated: true`. Names,
-descriptions, interfaces и action metadata также имеют консервативные limits.
+To protect the daemon, one text node is limited to 4096 characters, and the total text budget of a single snapshot is 256,000 characters; truncated nodes receive `textTruncated: true`. Names, descriptions, interfaces, and action metadata also have conservative limits.
 
-При включённом `redactProtectedText` bridge вообще не запрашивает `name`, `description`
-или `Text` contents у password-role widget: в ответ сразу помещается `[REDACTED]`.
+When `redactProtectedText` is enabled, the bridge does not request `name`, `description`, or `Text` content from password-role widgets: the response immediately includes `[REDACTED]`.
 
 #### `screenshot`
 
 Arguments:
 
-- `interactive` — попросить portal показать interactive selector, default `false`;
-- `includeBase64` — вернуть PNG base64 вместе с локальным path, default `false`, limit 25 MiB.
+- `interactive` — request portal to show interactive selector, default `false`;
+- `includeBase64` — return PNG base64 along with local path, default `false`, limit 25 MiB.
 
 ```json
 {"action":"screenshot","args":{"interactive":false,"includeBase64":false}}
 ```
 
-Результат:
+Result:
 
 ```json
 {
@@ -465,31 +440,31 @@ Arguments:
 
 #### `list_launchers`
 
-Ищет visible desktop entries. Arguments: `query` (substring), `limit` (`1..1000`).
+Searches for visible desktop entries. Arguments: `query` (substring), `limit` (`1..1000`).
 
 ```json
 {"action":"list_launchers","args":{"query":"terminal","limit":20}}
 ```
 
-### Control selected apps или ALL
+### Control Selected Apps or ALL
 
 #### `invoke`
 
-Вызывает нативный AT-SPI action. Предпочтительный способ нажать кнопку.
+Triggers the native AT-SPI action. The preferred way to click a button.
 
 ```json
 {"action":"invoke","args":{"ref":"g5:n42","action":"click"}}
 ```
 
-`args.action` может быть exact action name или index, default `0`.
+`args.action` can be an exact action name or index, default is `0`.
 
 #### `click`
 
-Convenience command с двумя методами:
+Convenience command with two methods:
 
-- `method: "action"` — AT-SPI Action, доступен в scoped Control;
-- `method: "coordinates"` — center bounds + portal click, требует ALL DESKTOP,
-  global-input gate и активную portal session.
+- `method: "action"` — AT-SPI Action, available in scoped Control;
+- `method: "coordinates"` — center bounds + portal click, requires ALL DESKTOP,
+  global-input gate and an active portal session.
 
 ```json
 {
@@ -513,7 +488,7 @@ Coordinates fallback:
 {"action":"focus","args":{"ref":"g5:n51"}}
 ```
 
-Вызывает `Atspi.Component.grab_focus()`.
+Triggers `Atspi.Component.grab_focus()`.
 
 #### `fill`
 
@@ -521,19 +496,19 @@ Coordinates fallback:
 {"action":"fill","args":{"ref":"g5:n51","text":"hello@example.com"}}
 ```
 
-Вызывает `Atspi.EditableText.set_text_contents()`. Максимум 100 000 символов.
-Текст никогда не записывается в audit; сохраняются только length и redaction marker.
+Triggers `Atspi.EditableText.set_text_contents()`. Maximum 100,000 characters.
+Text is never recorded in audit; only length and redaction marker are saved.
 
 #### `launch_app`
 
-Требует отдельный `allowLaunchApps`. В Control desktop ID/name также должен совпасть
-с `allowedApps`.
+Requires `allowLaunchApps` to be enabled. In Control, the desktop ID/name must also match
+`allowedApps`.
 
 ```json
 {"action":"launch_app","args":{"desktopId":"org.gnome.Terminal.desktop"}}
 ```
 
-### Только ALL DESKTOP + global-input gate
+### Only ALL DESKTOP + Global-Input Gate
 
 #### `start_remote_desktop`
 
@@ -541,17 +516,17 @@ Coordinates fallback:
 {"action":"start_remote_desktop","args":{}}
 ```
 
-Daemon последовательно создаёт RemoteDesktop session, запрашивает keyboard+pointer,
-добавляет один monitor ScreenCast source и вызывает Start. Пользователь выбирает экран
-и подтверждает доступ в системном диалоге GNOME. Без согласия команда завершается
-`portal_cancelled` или `portal_denied`.
+The daemon sequentially creates a RemoteDesktop session, requests keyboard+pointer,
+adds one monitor ScreenCast source and calls Start. The user selects the screen
+and confirms access in the GNOME system dialog. Without consent, the command ends
+with `portal_cancelled` or `portal_denied`.
 
-Если `persistPortalSession` включён и portal поддерживает version 2, restore token
-сохраняется локально. Это не отменяет возможность GNOME или пользователя отозвать доступ.
+If `persistPortalSession` is enabled and the portal supports version 2, the restore token
+is saved locally. This does not prevent GNOME or the user from revoking access.
 
 #### `stop_remote_desktop`
 
-Закрывает только portal session. Для полного отключения используйте `stop_all`.
+Closes only the portal session. For full disconnection, use `stop_all`.
 
 ```json
 {"action":"stop_remote_desktop","args":{}}
@@ -565,18 +540,18 @@ Global logical screen coordinates:
 {"action":"pointer_move","args":{"x":1280,"y":720}}
 ```
 
-Daemon выбирает shared stream по portal `position`/`size`, переводит global coordinates
-в stream-local и вызывает `NotifyPointerMotionAbsolute`.
+Daemon selects a shared stream by portal `position`/`size`, translates global coordinates
+to stream-local and calls `NotifyPointerMotionAbsolute`.
 
 #### `pointer_click`
 
-Optional `x` и `y` сначала перемещают указатель. Они должны быть переданы вместе.
+Optional `x` and `y` first move the pointer. They must be passed together.
 
 ```json
 {"action":"pointer_click","args":{"button":"left","x":1280,"y":720}}
 ```
 
-Buttons: `left`, `right`, `middle`, `side`, `extra` или numeric Linux evdev code.
+Buttons: `left`, `right`, `middle`, `side`, `extra` or numeric Linux evdev code.
 
 #### `scroll`
 
@@ -588,14 +563,14 @@ Continuous scroll deltas:
 
 #### `key`
 
-`key` — GDK keysym name, один Unicode character или numeric keysym. `event` — `tap`,
+`key` — GDK keysym name, one Unicode character or numeric keysym. `event` — `tap`,
 `press`, `release`.
 
 ```json
 {"action":"key","args":{"key":"Return","event":"tap"}}
 ```
 
-Для shortcut modifier нужно press/release явно:
+For keyboard shortcuts, modifier press/release events must be sent explicitly:
 
 ```json
 {"action":"key","args":{"key":"Control_L","event":"press"}}
@@ -603,7 +578,7 @@ Continuous scroll deltas:
 {"action":"key","args":{"key":"Control_L","event":"release"}}
 ```
 
-Клиент обязан отпускать modifiers даже после ошибки.
+The client is responsible for releasing modifiers even after an error.
 
 #### `type_text`
 
@@ -611,40 +586,39 @@ Continuous scroll deltas:
 {"action":"type_text","args":{"text":"Hello, GNOME!","intervalMs":10}}
 ```
 
-Максимум 10 000 characters, interval `0..1000` ms. Plaintext исключён из audit.
-Для обычных editable fields предпочтителен `fill`: он быстрее и не зависит от layout.
+Maximum 10,000 characters, interval `0..1000` ms. Plaintext is excluded from audit.
+For regular editable fields, `fill` is preferred: it is faster and independent of layout.
 
-## Семантические refs и generation
+## Semantic Refs and Generations
 
-Refs вроде `g12:n84` намеренно короткоживущие.
+Refs such as `g12:n84` are intentionally short-lived.
 
-- `list_apps` начинает новую generation;
-- `snapshot` начинает следующую generation и возвращает новые refs;
-- следующий discovery call делает старые refs stale;
-- stale action возвращает HTTP 409 `stale_reference`;
-- refs не следует сохранять между задачами или restart daemon.
+- `list_apps` starts a new generation;
+- `snapshot` starts the next generation and returns new refs;
+- the subsequent discovery call makes old refs stale;
+- a stale action returns HTTP 409 `stale_reference`;
+- refs should not be saved between tasks or daemon restarts.
 
-Это уменьшает риск нажать не тот элемент после изменения UI. Правильный цикл:
+This reduces the risk of clicking on the wrong element after UI changes. The correct cycle is:
 
 1. `list_apps`;
-2. выбрать application ref;
+2. select an application ref;
 3. `snapshot`;
-4. выбрать element ref из этого snapshot;
-5. немедленно выполнить одно действие;
-6. получить новый snapshot перед следующим важным действием.
+4. select an element ref from this snapshot;
+5. immediately perform one action;
+6. get a new snapshot before the next important action.
 
-## Audit и realtime events
+## Audit and Real-Time Events
 
-Events хранятся в памяти daemon. Максимум задаётся `maxEvents`; после restart история
-обнуляется. Постоянный operational log находится в systemd journal.
+Events are stored in daemon memory. The maximum is set by `maxEvents`; after a restart, the history is reset. A persistent operational log is available in the systemd journal.
 
-Получить batch:
+Get batch:
 
 ```bash
 gnome-desktop-bridge-cli events --after 0 --limit 200
 ```
 
-Следить в реальном времени:
+Monitor in real-time:
 
 ```bash
 gnome-desktop-bridge-cli events --follow
@@ -657,15 +631,15 @@ curl -N -H "Authorization: Bearer $TOKEN" \
   http://127.0.0.1:18766/api/events/stream?after=0
 ```
 
-Основные event types:
+Main event types:
 
 - `daemon.started`, `daemon.stopping`;
 - `command.started`, `command.completed`, `command.failed`;
 - `portal.session.started`, `portal.session.stopped`, `portal.session.revoked`;
 - `security.stop_all`, `security.startup_downgrade`.
 
-Audit не содержит `fill.text`, `type_text.text` или screenshot base64. Он может содержать
-названия приложений, refs, coordinates, key names и локальные screenshot paths.
+Audit does not contain `fill.text`, `type_text.text` or screenshot base64. It may contain
+application names, refs, coordinates, key names, and local screenshot paths.
 
 ## CLI
 
@@ -694,33 +668,32 @@ gnome-desktop-bridge-cli feature launch-apps off
 gnome-desktop-bridge-cli stop-all
 ```
 
-`access` и `feature` изменяют human-owned settings локально. В HTTP API намеренно нет
-`set_access`: AI, получивший токен, не может самостоятельно повысить свой уровень.
+`access` and `feature` modify human-owned settings locally. In the HTTP API, there is intentionally no
+`set_access`: AI, having received a token, cannot elevate its own level independently.
 
-## Инструкция для AI-клиента
+## AI Client Instruction
 
-AI, который впервые видит этот проект, должен следовать этому protocol:
+An AI that encounters this project for the first time must follow this protocol:
 
-1. Не предполагать, что bridge запущен: проверить `/health`.
-2. Прочитать токен из указанного пользователем файла, не печатать его в ответе/log.
-3. Вызвать `capabilities`, затем `get_state`.
-4. Если режим недостаточен, попросить человека изменить его в Control Center. Не менять
-   `settings.json` самостоятельно.
-5. Начинать с AT-SPI: `list_apps` → `snapshot` → semantic action.
-6. Выбирать приложение по `appId`; name использовать как fallback.
-7. Перед необратимым действием обновить snapshot и сверить name/role/state.
-8. Предпочитать `invoke`/`fill` координатным событиям.
-9. Не читать password fields; считать `[REDACTED]` окончательным значением.
-10. Для global input убедиться в `accessMode == all`, feature gate и active portal session.
-11. Не начинать portal session без прямой задачи пользователя: диалог требует внимания.
-12. После задачи вызвать `stop_all`, если ALL DESKTOP больше не нужен.
-13. Если был pressed modifier, гарантированно отправить release в `finally`-логике.
-14. При `stale_reference` повторить discovery, а не угадывать новый ref.
-15. При `portal_cancelled` не повторять dialog бесконечно.
-16. Никогда не выполнять purchases, sends, submissions, deletes или другие необратимые
-    действия без отдельного, актуального подтверждения пользователя.
+1. Do not assume that the bridge is running: check `/health`.
+2. Read the token from the user-specified file without printing it in the response/log.
+3. Call `capabilities`, then `get_state`.
+4. If the mode is insufficient, ask the person to change it in the Control Center. Do not change
+   `settings.json` yourself.
+5. Start with AT-SPI: `list_apps` → `snapshot` → semantic action.
+6. Select the application by `appId`; use name as a fallback.
+7. Before an irreversible action, update the snapshot and compare name/role/state.
+8. Prefer `invoke`/`fill` to coordinate events.
+9. Do not read password fields; consider `[REDACTED]` as the final value.
+10. For global input, ensure `accessMode == all`, feature gate, and active portal session.
+11. Do not start a portal session without a direct user task: the dialog requires attention.
+12. After the task, call `stop_all` if ALL DESKTOP is no longer needed.
+13. If a modifier was pressed, send the corresponding release event in a `finally` block.
+14. On `stale_reference`, repeat discovery instead of guessing a new ref.
+15. On `portal_cancelled`, do not repeat the dialog indefinitely.
+16. Never perform purchases, sends, submissions, deletes, or other irreversible actions without separate, current user confirmation.
 
-Рекомендуемый machine workflow:
+Recommended machine workflow:
 
 ```text
 health
@@ -736,7 +709,7 @@ health
   -> stop_all when elevated access is no longer needed
 ```
 
-### Минимальный Python client
+### Minimal Python Client
 
 ```python
 import json
@@ -761,20 +734,20 @@ with urllib.request.urlopen(request) as response:
     print(json.load(response)["result"])
 ```
 
-## Security model
+## Security Model
 
-Подробности — в [SECURITY.md](SECURITY.md).
+See [SECURITY.md](SECURITY.md) for details.
 
-Основные свойства:
+Main properties:
 
 - default policy `Off`;
 - random 256-bit token;
 - token/config mode `0600`, directories `0700`;
 - constant-time token comparison;
-- loopback-only bind и Host validation;
+- loopback-only bind and Host validation;
 - no CORS;
 - request size limit;
-- central allow/deny policy перед backend call;
+- central allow/deny policy before backend call;
 - human-only elevation path;
 - separate global-input gate;
 - GNOME portal consent;
@@ -786,25 +759,25 @@ with urllib.request.urlopen(request) as response:
 - no shell command endpoint;
 - no API token disclosure.
 
-### Важная граница доверия
+### Important Trust Boundary
 
-Любой процесс, уже выполняющийся под тем же Linux user и способный прочитать token file,
-обычно обладает широким доступом к пользовательским данным и может impersonate API client.
-Токен защищает от случайных обращений, сайтов и других users, но не создаёт sandbox между
-двумя недоверенными процессами одного UID.
+Any process already running under the same Linux user and capable of reading the token file
+usually has broad access to user data and can impersonate an API client.
+The token protects against accidental access, websites, and other users, but does not create a sandbox between
+two untrusted processes with the same UID.
 
-Для недоверенного AI-runtime нужен дополнительный OS sandbox и broker с отдельным
-per-request approval, а не только этот bearer token.
+For an untrusted AI-runtime, an additional OS sandbox and broker with separate
+per-request approval are needed, in addition to this bearer token.
 
-### Redaction не абсолютна
+### Redaction is Not Absolute
 
-AT-SPI password role маскируется. Но приложение может ошибочно представить секрет как
-обычный text widget; screenshot также способен содержать секреты. Поэтому Observe уже
-является чувствительным разрешением.
+AT-SPI password role is masked. However, the application may mistakenly represent a secret as
+a regular text widget; screenshots can also contain secrets. Therefore, Observe is already
+a sensitive permission.
 
 ## Troubleshooting
 
-### Daemon не подключается
+### Daemon Does Not Connect
 
 ```bash
 systemctl --user status gnome-desktop-bridge
@@ -812,89 +785,89 @@ journalctl --user -u gnome-desktop-bridge -n 200 --no-pager
 curl http://127.0.0.1:18766/health
 ```
 
-Проверьте, что команда запускается внутри активной GNOME user session, где доступны
-`DBUS_SESSION_BUS_ADDRESS`, `XDG_RUNTIME_DIR`, accessibility bus и portals.
+Check that the command is running inside an active GNOME user session where
+`DBUS_SESSION_BUS_ADDRESS`, `XDG_RUNTIME_DIR`, accessibility bus, and portals are available.
 
 ### `401 unauthorized`
 
-- перечитайте token file;
-- не добавляйте newline к header value;
-- после rotation перезапустите daemon;
-- убедитесь, что клиент и daemon работают от одного Linux user.
+- Re-read the token file;
+- Do not add a newline to the header value;
+- After rotation, restart the daemon;
+- Ensure that both the client and the daemon run as the same Linux user.
 
 ### `AT-SPI backend unavailable`
 
-Проверьте пакеты и accessibility bus:
+Check the packages and accessibility bus:
 
 ```bash
 busctl --user status org.a11y.Bus
 python3 -c 'import gi; gi.require_version("Atspi","2.0"); from gi.repository import Atspi; print(Atspi.get_desktop_count())'
 ```
 
-Не запускайте daemon через `sudo`: root окажется в другой D-Bus/session environment.
+Do not start the daemon through `sudo`: root will end up in a different D-Bus/session environment.
 
-### Snapshot пустой или неполный
+### Snapshot is empty or incomplete
 
-- некоторые apps плохо реализуют accessibility;
-- увеличьте `depth`/`maxNodes`;
-- Electron/Chromium app может требовать включённую accessibility support;
-- canvas/game/remote-video UI часто не имеет полезного semantic tree;
-- используйте screenshot только после явного разрешения.
+- Some apps poorly implement accessibility;
+- Increase `depth`/`maxNodes`;
+- An Electron/Chromium app may require enabled accessibility support;
+- Canvas/game/remote-video UI often lacks a useful semantic tree;
+- Use screenshot only after explicit permission.
 
 ### `stale_reference`
 
-Другой `list_apps` или `snapshot` уже начал новую generation. Повторите discovery и
-не используйте старый ref.
+Another `list_apps` or `snapshot` has already started a new generation. Repeat the discovery and
+do not use the old ref.
 
-### Portal dialog отменён или permission denied
+### Portal dialog cancelled or permission denied
 
-Это ожидаемый user decision. Не зацикливайте запрос. Убедитесь, что:
+This is an expected user decision. Do not loop the request. Ensure that:
 
-- режим `ALL DESKTOP` сохранён;
-- `Global pointer and keyboard` включён;
-- daemon работает в GNOME session;
-- `xdg-desktop-portal-gnome` запущен.
+- The `ALL DESKTOP` mode is saved;
+- `Global pointer and keyboard` is enabled;
+- The daemon runs in a GNOME session;
+- `xdg-desktop-portal-gnome` is started.
 
 ```bash
 systemctl --user status xdg-desktop-portal xdg-desktop-portal-gnome
 ```
 
-### Клик попадает не туда
+### Click hits the wrong target
 
-- получите новый snapshot непосредственно перед click;
-- проверьте bounds;
-- убедитесь, что выбран правильный monitor в portal dialog;
-- fractional scaling и приложение с неверными AT-SPI bounds могут давать расхождение;
-- сначала используйте `invoke`, а coordinates только как fallback.
+- Get a new snapshot immediately before the click;
+- Check the bounds;
+- Ensure that the correct monitor is selected in the portal dialog;
+- Fractional scaling and an app with incorrect AT-SPI bounds can cause discrepancies;
+- First use `invoke`, then coordinates only as a fallback.
 
-### Режим Control не разрешает приложение
+### Control mode does not allow the application
 
-Посмотрите identity из `list_apps`. Добавьте точный `appId` или безопасный glob в
-Control Center. Не используйте `*`, если не хотите фактически получить почти ALL scope.
+Check the identity from `list_apps`. Add the exact `appId` or a safe glob to
+the Control Center. Do not use `*` unless you actually want near-global access.
 
-### Port занят
+### Port is in use
 
-Измените `port` в settings, затем:
+Change `port` in settings, then:
 
 ```bash
 systemctl --user restart gnome-desktop-bridge
 ```
 
-### Emergency stop без GUI
+### Emergency stop without GUI
 
 ```bash
 gnome-desktop-bridge-cli stop-all
 ```
 
-Если daemon завис, выключите service; portal session закроется при исчезновении клиента:
+If the daemon hangs, disable the service; the portal session will close when the client disappears:
 
 ```bash
 systemctl --user stop gnome-desktop-bridge
 ```
 
-## Разработка
+## Development
 
-Запуск из source tree без установки:
+Running from source tree without installation:
 
 ```bash
 PYTHONPATH=. python3 -m gnome_desktop_bridge.server --verbose
@@ -911,10 +884,10 @@ desktop-file-validate data/io.github.local.GnomeDesktopBridge.desktop
 systemd-analyze --user verify systemd/gnome-desktop-bridge.service
 ```
 
-Tests не нажимают UI и не открывают portal dialog. Live smoke test выполняется отдельно
-в активной GNOME session с человеком у экрана.
+Tests do not click UI and do not open portal dialog. Live smoke test is performed separately
+in an active GNOME session with a person at the screen.
 
-### Структура проекта
+### Project structure
 
 ```text
 gnome_desktop_bridge/
@@ -935,28 +908,26 @@ systemd/               # hardened user service
 tests/                 # unit tests
 ```
 
-## Известные ограничения и roadmap
+## Known Limitations and Roadmap
 
-MVP использует совместимые `NotifyPointer*`/`NotifyKeyboard*` methods RemoteDesktop
-portal. Следующий backend должен использовать `ConnectToEIS` + libei; это официальный
-современный transport и лучше подходит для сложных input sequences.
+The MVP uses compatible `NotifyPointer*`/`NotifyKeyboard*` methods for RemoteDesktop portal. The next backend should use `ConnectToEIS` + libei; this is the official modern transport and better suits complex input sequences.
 
-Другие возможные улучшения:
+Other possible improvements:
 
-- PipeWire frame capture для consented realtime visual debugging;
-- optional GNOME Shell indicator с постоянно видимым mode/session state;
-- Unix domain socket и peer-credential authentication;
-- per-client tokens/scopes и rotation без restart;
-- persistent encrypted audit с retention policy;
-- action confirmation broker для consequential operations;
+- PipeWire frame capture for consented real-time visual debugging;
+- optional GNOME Shell indicator with constantly visible mode/session state;
+- Unix domain socket and peer-credential authentication;
+- per-client tokens/scopes and rotation without restart;
+- persistent encrypted audit with retention policy;
+- action confirmation broker for consequential operations;
 - better multi-monitor/fractional-scale calibration;
-- semantic search endpoint без передачи полного tree;
-- rate limits и per-command deadlines;
+- semantic search endpoint without passing the full tree;
+- rate limits and per-command deadlines;
 - package/RPM/Flatpak-friendly distribution;
-- libei Python binding или небольшой Rust helper;
-- clipboard portal support как отдельный feature-gate;
-- automated accessibility event subscriptions вместо polling snapshots.
+- libei Python binding or small Rust helper;
+- clipboard portal support as a separate feature gate;
+- automated accessibility event subscriptions instead of polling snapshots.
 
-## Лицензия
+## License
 
-MIT — см. [LICENSE](LICENSE).
+MIT — see [LICENSE](LICENSE).
