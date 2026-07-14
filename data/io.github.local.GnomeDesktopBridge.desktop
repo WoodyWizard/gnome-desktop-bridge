@@ -1,0 +1,11 @@
+[Desktop Entry]
+Type=Application
+Name=GNOME Desktop Bridge
+Comment=Control local desktop debugging and automation permissions
+Exec=gnome-desktop-bridge-control
+Icon=preferences-system-symbolic
+Terminal=false
+Categories=System;
+Keywords=desktop;automation;debug;accessibility;remote;AI;
+StartupNotify=true
+DBusActivatable=false

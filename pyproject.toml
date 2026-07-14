@@ -1,0 +1,27 @@
+[build-system]
+requires = ["setuptools>=69"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "gnome-desktop-bridge"
+version = "0.1.0"
+description = "A local, consent-gated debugging and automation bridge for GNOME on Wayland"
+readme = "README.md"
+requires-python = ">=3.11"
+license = { text = "MIT" }
+authors = [
+  { name = "GNOME Desktop Bridge contributors" },
+]
+dependencies = []
+
+[project.scripts]
+gnome-desktop-bridge = "gnome_desktop_bridge.server:main"
+gnome-desktop-bridge-cli = "gnome_desktop_bridge.cli:main"
+gnome-desktop-bridge-control = "gnome_desktop_bridge.control_center:main"
+
+[tool.setuptools]
+packages = ["gnome_desktop_bridge"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"

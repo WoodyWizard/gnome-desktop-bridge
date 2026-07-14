@@ -1,0 +1,47 @@
+[Unit]
+Description=GNOME Desktop Bridge (local consent-gated automation)
+Documentation=file:%h/Projects/gnome-desktop-bridge/README.md
+After=graphical-session.target
+PartOf=graphical-session.target
+
+[Service]
+Type=simple
+ExecStart=%h/.local/bin/gnome-desktop-bridge
+Restart=on-failure
+RestartSec=2s
+TimeoutStopSec=10s
+UMask=0077
+Environment=PYTHONUNBUFFERED=1
+RuntimeDirectory=gnome-desktop-bridge
+RuntimeDirectoryMode=0700
+
+# Defense in depth. The process still needs the user D-Bus, localhost sockets,
+# AT-SPI, portals, and read access to desktop entries.
+NoNewPrivileges=yes
+CapabilityBoundingSet=
+AmbientCapabilities=
+KeyringMode=private
+PrivateDevices=yes
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths=%h/.config/gnome-desktop-bridge
+ReadWritePaths=%h/.local/share/gnome-desktop-bridge
+ReadWritePaths=%t/gnome-desktop-bridge
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+ProtectProc=invisible
+ProcSubset=pid
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+RestrictNamespaces=yes
+LockPersonality=yes
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+SystemCallFilter=~@clock @cpu-emulation @debug @module @mount @obsolete @raw-io @reboot @swap
+SystemCallArchitectures=native
+
+[Install]
+WantedBy=graphical-session.target
