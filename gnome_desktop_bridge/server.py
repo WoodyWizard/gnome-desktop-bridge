@@ -9,6 +9,8 @@ import hmac
 import json
 import logging
 import os
+import re
+import select
 import signal
 import socket
 import stat
@@ -22,12 +24,20 @@ from urllib.parse import parse_qs, urlparse
 
 from . import __version__
 from .commands import CommandDispatcher
-from .config import AppPaths, SettingsStore, load_or_create_token
+from .config import AppPaths, SettingsStore, TokenStore
 from .errors import BridgeError, InvalidRequest
 from .events import EventBuffer
 
 MAX_REQUEST_BODY = 1024 * 1024
+SSE_KEEPALIVE_S = 15.0
+SSE_POLL_S = 1.0
 LOGGER = logging.getLogger("gnome-desktop-bridge")
+CLIENT_HEADER = "X-Bridge-Client"
+CLIENT_PATTERN = re.compile(r"[A-Za-z0-9][A-Za-z0-9._ -]{0,63}")
+
+
+def _reject_json_constant(name: str) -> Any:
+    raise InvalidRequest(f"{name} is not a valid JSON number")
 
 
 class BridgeHTTPServer(ThreadingHTTPServer):
@@ -39,14 +49,18 @@ class BridgeHTTPServer(ThreadingHTTPServer):
         server_address: tuple[str, int],
         handler: type[BaseHTTPRequestHandler],
         *,
-        token: str,
+        token: str | TokenStore,
         dispatcher: CommandDispatcher,
         events: EventBuffer,
     ) -> None:
-        self.token = token
+        self._token_source = token
         self.dispatcher = dispatcher
         self.events = events
         super().__init__(server_address, handler)
+
+    def current_token(self) -> str | None:
+        source = self._token_source
+        return source if isinstance(source, str) else source.get()
 
     def get_request(self) -> tuple[socket.socket, Any]:
         request, client_address = super().get_request()
@@ -101,7 +115,7 @@ class BridgeHandler(BaseHTTPRequestHandler):
                 header_after = self.headers.get("Last-Event-ID", "0")
                 default_after = int(header_after) if header_after.isdigit() else 0
                 after = self._query_int(query, "after", default_after, minimum=0)
-                self._serve_event_stream(after)
+                self._serve_event_stream(after, self._client_name())
             except BridgeError as exc:
                 self._send_bridge_error(exc)
             return
@@ -121,7 +135,7 @@ class BridgeHandler(BaseHTTPRequestHandler):
             return
         try:
             payload = self._read_json_body()
-            result = self.bridge_server.dispatcher.dispatch(payload)
+            result = self.bridge_server.dispatcher.dispatch(payload, client=self._client_name())
             self._send_json(HTTPStatus.OK, {"ok": True, "result": result})
         except BridgeError as exc:
             self._send_bridge_error(exc)
@@ -154,13 +168,24 @@ class BridgeHandler(BaseHTTPRequestHandler):
             host = raw.rsplit(":", 1)[0] if raw.count(":") <= 1 else raw
         return host.casefold() in {"127.0.0.1", "localhost", "::1"}
 
+    def _client_name(self) -> str:
+        raw = self.headers.get(CLIENT_HEADER, "").strip()
+        return raw if CLIENT_PATTERN.fullmatch(raw) else "api"
+
     def _authenticate(self) -> bool:
         header = self.headers.get("Authorization", "")
         scheme, separator, candidate = header.partition(" ")
+        token = self.bridge_server.current_token()
+        # Compare bytes: compare_digest raises on non-ASCII str input, and header
+        # values are client-controlled.
         valid = (
-            bool(separator)
+            token is not None
+            and bool(separator)
             and scheme.casefold() == "bearer"
-            and hmac.compare_digest(candidate.strip(), self.bridge_server.token)
+            and hmac.compare_digest(
+                candidate.strip().encode("utf-8", "surrogateescape"),
+                token.encode("ascii"),
+            )
         )
         if not valid:
             # Do not try to reuse a connection whose unauthenticated request body
@@ -217,8 +242,8 @@ class BridgeHandler(BaseHTTPRequestHandler):
             )
         raw = self.rfile.read(length)
         try:
-            payload = json.loads(raw.decode("utf-8"))
-        except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+            payload = json.loads(raw.decode("utf-8"), parse_constant=_reject_json_constant)
+        except (UnicodeDecodeError, json.JSONDecodeError, RecursionError) as exc:
             raise InvalidRequest("Request body is not valid UTF-8 JSON") from exc
         if not isinstance(payload, dict):
             raise InvalidRequest("Command body must be a JSON object")
@@ -243,23 +268,46 @@ class BridgeHandler(BaseHTTPRequestHandler):
             raise InvalidRequest(f"Query parameter {name} must be between {minimum}{suffix}")
         return value
 
-    def _serve_event_stream(self, after: int) -> None:
-        self.send_response(HTTPStatus.OK)
-        self.send_header("Content-Type", "text/event-stream; charset=utf-8")
-        self.send_header("Cache-Control", "no-store")
-        self.send_header("Connection", "keep-alive")
-        self.send_header("X-Accel-Buffering", "no")
-        self.end_headers()
+    def _serve_event_stream(self, after: int, client: str) -> None:
+        self.close_connection = True
+        with self.bridge_server.events.subscribed(client):
+            self.send_response(HTTPStatus.OK)
+            self.send_header("Content-Type", "text/event-stream; charset=utf-8")
+            self.send_header("Cache-Control", "no-store")
+            self.send_header("Connection", "keep-alive")
+            self.send_header("X-Accel-Buffering", "no")
+            self.end_headers()
+            self._pump_events(after)
+
+    def _client_gone(self) -> bool:
+        """Notice a closed stream promptly instead of at the next failed write."""
+
+        try:
+            readable, _writable, _errors = select.select([self.connection], [], [], 0)
+            if not readable:
+                return False
+            return self.connection.recv(1, socket.MSG_PEEK) == b""
+        except (OSError, ValueError):
+            return True
+
+    def _pump_events(self, after: int) -> None:
         event_id = after
+        idle = 0.0
         try:
             self.wfile.write(b": connected\n\n")
             self.wfile.flush()
-            while True:
-                events = self.bridge_server.events.wait_after(event_id, timeout=15.0, limit=200)
+            while not self._client_gone():
+                events = self.bridge_server.events.wait_after(
+                    event_id, timeout=SSE_POLL_S, limit=200
+                )
                 if not events:
-                    self.wfile.write(b": keepalive\n\n")
-                    self.wfile.flush()
+                    idle += SSE_POLL_S
+                    if idle >= SSE_KEEPALIVE_S:
+                        idle = 0.0
+                        self.wfile.write(b": keepalive\n\n")
+                        self.wfile.flush()
                     continue
+                idle = 0.0
                 for event in events:
                     data = json.dumps(event, ensure_ascii=False, separators=(",", ":"))
                     packet = (
@@ -362,12 +410,10 @@ def run_daemon() -> int:
     startup_downgraded = initial_settings.access_mode == "all"
     if startup_downgraded:
         # ALL DESKTOP is deliberately session-scoped. A crash, logout, reboot,
-        # or manual service restart requires fresh human elevation.
-        initial_settings = settings_store.update(
-            access_mode="off",
-            allow_portal_input=False,
-        )
-    token = load_or_create_token(paths)
+        # or manual service restart requires fresh human elevation. force_off
+        # keeps Off in memory even when the settings file cannot be written.
+        initial_settings, _persistence_error = settings_store.force_off()
+    token = TokenStore(paths)
     events = EventBuffer(initial_settings.max_events)
     dispatcher = CommandDispatcher(settings_store, events)
     server_class = _server_class_for(initial_settings.host)
@@ -383,7 +429,7 @@ def run_daemon() -> int:
     def policy_watcher() -> None:
         while not stop_watcher.wait(1.0):
             try:
-                dispatcher.enforce_current_policy()
+                dispatcher.tick()
             except Exception:
                 LOGGER.exception("Policy watcher failed")
 

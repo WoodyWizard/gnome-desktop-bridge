@@ -17,6 +17,7 @@ class AppBackend:
     def __init__(self) -> None:
         self._lock = threading.RLock()
         self._gio: Any | None = None
+        self._desktop_app_info: Any | None = None
 
     def _ensure(self) -> Any:
         if self._gio is not None:
@@ -28,6 +29,13 @@ class AppBackend:
             from gi.repository import Gio
         except Exception as exc:
             raise BackendUnavailable("gio", "Gio application metadata is unavailable") from exc
+        try:
+            gi.require_version("GioUnix", "2.0")
+            from gi.repository import GioUnix
+
+            self._desktop_app_info = GioUnix.DesktopAppInfo
+        except (ImportError, ValueError):
+            self._desktop_app_info = Gio.DesktopAppInfo
         self._gio = Gio
         return Gio
 
@@ -86,7 +94,11 @@ class AppBackend:
         Gio = self._ensure()
         wanted = desktop_id.strip()
         with self._lock:
-            app = Gio.DesktopAppInfo.new(wanted)
+            try:
+                app = self._desktop_app_info.new(wanted)
+            except TypeError:
+                # PyGObject raises instead of returning None for a NULL result.
+                app = None
             if app is None:
                 # Allow an exact, case-insensitive display name as a convenience,
                 # but never fuzzy-match a launch request.

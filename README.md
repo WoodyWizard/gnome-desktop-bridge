@@ -20,8 +20,16 @@ A local, user-managed bridge for observing, debugging, and automating the GNOME 
 - global clicks, mouse movement, scroll, keys, and text input through the XDG RemoteDesktop portal;
 - launching `.desktop` applications via a separate transient systemd unit;
 - command log in memory and SSE event stream in real-time;
-- native GTK/libadwaita control panel;
-- emergency `STOP ALL`, which closes the portal session and returns to mode `Off`;
+- native GTK/libadwaita Control Center with a live status overview, allowlist editor,
+  live audit log, and animation settings;
+- on-screen animations while an agent works (GNOME Shell extension): a glow around the
+  screen while an agent is connected, an animated agent cursor with a trail, click
+  ripples, highlighted targets, key caps, and a status pill;
+- top-bar indicator with the current mode and a one-click emergency stop;
+- agent presence (`hello`/`goodbye`, automatic idle detection) shown everywhere;
+- correct screen coordinates for native Wayland windows through the Shell extension;
+- emergency `STOP ALL`, which closes the portal session and returns to mode `Off`,
+  even when the daemon is not running;
 - systemd user service with hardening settings;
 - CLI for human users and automated clients.
 
@@ -85,7 +93,59 @@ GNOME Desktop Bridge Control Center
           +-- can always invoke STOP ALL
 ```
 
-The solution is intentionally not a GNOME Shell extension. The main logic operates as a regular user service: this is simpler to test, update, and isolate. A shell indicator can be added later as an optional visual frontend.
+The main logic is intentionally not a GNOME Shell extension. It operates as a regular user service: this is simpler to test, update, and isolate. The optional Shell extension (`shell-extension/`) is only a visual frontend and a window-geometry helper: it reads the same authenticated event stream as any other client and never gains permissions of its own.
+
+## On-Screen Animations
+
+Wayland does not let a normal application draw over the whole desktop, so the
+animations live in a small GNOME Shell extension, **Desktop Bridge Overlay**, that the
+installer links and enables. Everything it draws is non-interactive: clicks and keys
+always go to the windows underneath.
+
+| What happens | What you see |
+|---|---|
+| An agent connects (`hello` or its first command) | A glow traces around the screen edges and a status pill drops in: agent name, current activity, access mode |
+| The agent is idle | The glow slowly breathes, shifting between violet and cyan |
+| Pointer movement | A branded agent cursor glides to the target with a fading trail |
+| Click | Ripples at the click point (violet left, amber right, cyan middle); double clicks ripple twice |
+| AT-SPI action (`invoke`, `fill`, `focus`, `click`) | The target element is outlined with a label such as *Clicking “Save”* |
+| Reading an interface (`snapshot`) | A scan line sweeps over the window |
+| Keys | Key caps at the bottom of the screen, e.g. **Ctrl** + **L** |
+| Typing | The pill shows *Typing 42 characters* with a progress bar; characters are never shown |
+| Scroll | Chevrons near the cursor in the scroll direction |
+| Screenshot | The overlay hides so the agent sees the real desktop, then the screen flashes |
+| Pointer and keyboard session active | The glow turns amber and rose |
+| Error | The pill turns red and shakes, with a short explanation |
+| `STOP ALL` | The glow flashes red and fades out |
+| The agent leaves (`goodbye`, 120 s idle, or `STOP ALL`) | The pill says why and everything fades out |
+
+Settings (Control Center → **Animations**, or the CLI):
+
+- `overlayEnabled` — master switch;
+- `overlayEdgeGlow` — the screen-edge glow;
+- `overlayShowKeys` — key caps; a lone printable character is always shown as `•`,
+  only shortcuts with Ctrl/Alt/Super are spelled out, and `type_text` never reveals text;
+- `pointerMotionMs` — the *real* pointer glides along an eased path for this many
+  milliseconds (default `200`, `0` = jump). This also makes hover menus react naturally.
+
+The extension also puts an indicator in the top bar: a colored dot shows the mode
+(blue Observe, green Control, orange All desktop) and pulses violet while an agent is
+connected. Its menu shows the agent and command count, toggles animations, opens the
+Control Center, and has **Stop all agent access**, which falls back to
+`gnome-desktop-bridge-cli stop-all` if the daemon does not answer.
+
+GNOME Shell on Wayland discovers newly installed extensions only at login, so after
+the first installation log out and back in once.
+
+### Screen Coordinates on Wayland
+
+Native Wayland applications do not know where their windows are, so AT-SPI reports
+their element positions relative to the window, and every window claims to be at
+`(0, 0)`. The extension exports a small D-Bus method on GNOME Shell's bus name that
+returns the real window origin; the daemon adds it to AT-SPI coordinates for
+`click` with `method: "coordinates"` and for on-screen highlights. Without the
+extension, a coordinate click on Wayland fails with `coordinates_unavailable` instead
+of clicking the wrong place.
 
 ### Backends
 
@@ -173,16 +233,18 @@ Complete removal of local data, screenshots, and token:
 ## First Secure Launch
 
 1. Open **GNOME Desktop Bridge**.
-2. Select `Observe`.
-3. Leave `Redact protected text` enabled.
-4. Click **Apply**.
-5. Check `list_apps` and one snapshot.
-6. For actions, select `Control selected apps` and specify the allowlist, for example
-   `org.mozilla.firefox, Firefox`.
-7. Use `ALL DESKTOP` only during the task.
-8. To enable global clicks, turn on `Global pointer and keyboard`, save the settings,
-   click **Start session** and confirm the GNOME system dialog.
-9. After the task, click **STOP ALL**.
+2. On **Overview**, pick `Observe`. Changes apply immediately.
+3. On **Permissions**, leave **Hide password fields** enabled.
+4. Check `list_apps` and one snapshot.
+5. For actions, pick `Control` and add the applications on **Permissions**, either
+   with **+** (installed applications) or by typing a pattern such as
+   `org.mozilla.firefox`.
+6. Use `All desktop` only during the task. The confirmation dialog can also allow
+   global pointer and keyboard.
+7. For global clicks, press **Start** next to *Pointer and keyboard control* and
+   confirm the GNOME system dialog.
+8. After the task, press **Stop all agent access** (or `Ctrl+Shift+Escape` in the
+   Control Center, or the top-bar indicator).
 
 ## Local Files
 
@@ -208,11 +270,11 @@ Show the token:
 gnome-desktop-bridge-cli token
 ```
 
-Rotate and then restart the daemon:
+Rotate it (the daemon picks up the new token on the next request; if the new file is
+invalid, it rejects every token until a valid one is written):
 
 ```bash
 gnome-desktop-bridge-cli token --rotate
-systemctl --user restart gnome-desktop-bridge
 ```
 
 Do not place the token in Git, screenshots, issue reports, or shell history. For `curl`, it is better to read it from the file into a variable of the current shell:
@@ -233,6 +295,10 @@ TOKEN="$(<~/.local/share/gnome-desktop-bridge/token)"
   "allowLaunchApps": false,
   "persistPortalSession": false,
   "redactProtectedText": true,
+  "overlayEnabled": true,
+  "overlayShowKeys": true,
+  "overlayEdgeGlow": true,
+  "pointerMotionMs": 200,
   "maxEvents": 2000,
   "host": "127.0.0.1",
   "port": 18766
@@ -240,6 +306,9 @@ TOKEN="$(<~/.local/share/gnome-desktop-bridge/token)"
 ```
 
 `host` accepts only loopback (`127.0.0.1`, `::1`, `localhost`). Changing host/port requires a restart; other daemon values are automatically picked up.
+
+Newer keys (`overlayEnabled`, `overlayShowKeys`, `overlayEdgeGlow`, `pointerMotionMs`)
+default to `true`, `true`, `true`, and `200` when absent, so older files keep working.
 
 `allowedApps` contains case-insensitive shell-style globs matched against the AT-SPI application name, application ID, toolkit name, and PID. Prefer a desktop/application ID over a PID.
 
@@ -253,6 +322,9 @@ TOKEN="$(<~/.local/share/gnome-desktop-bridge/token)"
 - `Content-Type: application/json` is required;
 - unknown top-level fields and action arguments are rejected, not ignored;
 - all `/api/*` require `Authorization: Bearer <token>`;
+- optional `X-Bridge-Client: <name>` (letters, digits, `._ -`, up to 64 characters)
+  names the caller in the audit log and on screen;
+- `NaN`/`Infinity` literals are rejected;
 - CORS is intentionally absent;
 - responses contain `Cache-Control: no-store`.
 
@@ -277,7 +349,7 @@ Error:
 
 Typical error codes: `unauthorized`, `invalid_request`, `access_denied`, `not_found`,
 `stale_reference`, `backend_unavailable`, `portal_cancelled`, `portal_denied`,
-`device_not_granted`, `internal_error`.
+`device_not_granted`, `coordinates_unavailable`, `operation_cancelled`, `internal_error`.
 
 ### Endpoints
 
@@ -355,6 +427,23 @@ Result contains `settingsPersisted`. Even if the filesystem does not allow savin
 ```json
 {"action":"stop_all","args":{}}
 ```
+
+It also disconnects the current agent.
+
+#### `hello` and `goodbye`
+
+Announce the agent by name, and say when it is done. Both are optional: the first
+command of any client already counts as a connection, and a client that sends nothing
+for 120 seconds is considered gone. The name appears in the Control Center, the
+top-bar indicator, the on-screen pill, and next to the agent cursor.
+
+```json
+{"action":"hello","args":{"name":"Claude"}}
+{"action":"goodbye","args":{}}
+```
+
+Requests from the Control Center, the overlay, and `gnome-desktop-bridge-cli stop-all`
+identify themselves as the human operator and never count as an agent.
 
 ### Observe or Higher
 
@@ -473,14 +562,17 @@ Convenience command with two methods:
 }
 ```
 
-Coordinates fallback:
+Coordinates fallback (`count` 1–3 for double/triple click):
 
 ```json
 {
   "action":"click",
-  "args":{"ref":"g5:n42","method":"coordinates","button":"left"}
+  "args":{"ref":"g5:n42","method":"coordinates","button":"left","count":1}
 }
 ```
+
+On Wayland this needs the Shell extension to locate the window; see
+[Screen Coordinates on Wayland](#screen-coordinates-on-wayland).
 
 #### `focus`
 
@@ -537,8 +629,12 @@ Closes only the portal session. For full disconnection, use `stop_all`.
 Global logical screen coordinates:
 
 ```json
-{"action":"pointer_move","args":{"x":1280,"y":720}}
+{"action":"pointer_move","args":{"x":1280,"y":720,"durationMs":200}}
 ```
+
+`durationMs` (`0..2000`, default `pointerMotionMs`) moves the pointer along an eased
+path instead of jumping. The first move of a session always jumps, because the
+starting position is unknown.
 
 Daemon selects a shared stream by portal `position`/`size`, translates global coordinates
 to stream-local and calls `NotifyPointerMotionAbsolute`.
@@ -548,17 +644,20 @@ to stream-local and calls `NotifyPointerMotionAbsolute`.
 Optional `x` and `y` first move the pointer. They must be passed together.
 
 ```json
-{"action":"pointer_click","args":{"button":"left","x":1280,"y":720}}
+{"action":"pointer_click","args":{"button":"left","x":1280,"y":720,"count":2}}
 ```
 
 Buttons: `left`, `right`, `middle`, `side`, `extra` or numeric Linux evdev code.
+`count` is `1..3`; `durationMs` works as for `pointer_move`.
 
 #### `scroll`
 
-Continuous scroll deltas:
+Smooth scroll deltas, optionally at a position; `discrete: true` sends wheel clicks
+instead (integers up to 100):
 
 ```json
 {"action":"scroll","args":{"dx":0,"dy":-120}}
+{"action":"scroll","args":{"dy":3,"discrete":true,"x":800,"y":600}}
 ```
 
 #### `key`
@@ -570,15 +669,15 @@ Continuous scroll deltas:
 {"action":"key","args":{"key":"Return","event":"tap"}}
 ```
 
-For keyboard shortcuts, modifier press/release events must be sent explicitly:
+For keyboard shortcuts, pass `modifiers`; the bridge holds them around the key and
+always releases them, even if sending the key fails:
 
 ```json
-{"action":"key","args":{"key":"Control_L","event":"press"}}
-{"action":"key","args":{"key":"l","event":"tap"}}
-{"action":"key","args":{"key":"Control_L","event":"release"}}
+{"action":"key","args":{"key":"l","modifiers":["Control_L"]}}
 ```
 
-The client is responsible for releasing modifiers even after an error.
+Separate `press`/`release` events still work; then the client is responsible for
+releasing modifiers even after an error.
 
 #### `type_text`
 
@@ -586,7 +685,9 @@ The client is responsible for releasing modifiers even after an error.
 {"action":"type_text","args":{"text":"Hello, GNOME!","intervalMs":10}}
 ```
 
-Maximum 10,000 characters, interval `0..1000` ms. Plaintext is excluded from audit.
+Maximum 10,000 characters, interval `0..1000` ms. Newlines are typed as Return and tabs
+as Tab. Every character is checked before typing starts, so an unsupported character
+fails the request without typing half of it. Plaintext is excluded from audit.
 For regular editable fields, `fill` is preferred: it is faster and independent of layout.
 
 ## Semantic Refs and Generations
@@ -631,12 +732,24 @@ curl -N -H "Authorization: Bearer $TOKEN" \
   http://127.0.0.1:18766/api/events/stream?after=0
 ```
 
+Human-readable:
+
+```bash
+gnome-desktop-bridge-cli events --follow --pretty
+```
+
 Main event types:
 
 - `daemon.started`, `daemon.stopping`;
-- `command.started`, `command.completed`, `command.failed`;
-- `portal.session.started`, `portal.session.stopped`, `portal.session.revoked`;
-- `security.stop_all`, `security.startup_downgrade`.
+- `command.started`, `command.completed`, `command.failed` (with the `client` name);
+- `agent.connected`, `agent.renamed`, `agent.disconnected` (`reason`: `goodbye`, `idle`,
+  `stop_all`, `replaced`);
+- `settings.changed`;
+- `portal.session.started`, `portal.session.stopped`, `portal.session.revoked`,
+  `portal.session.ended` (closed by GNOME, e.g. from the top-bar sharing indicator);
+- `security.stop_all`, `security.startup_downgrade`;
+- `visual.*` — cues for the on-screen overlay, emitted only while an overlay is
+  connected and `overlayEnabled` is on.
 
 Audit does not contain `fill.text`, `type_text.text` or screenshot base64. It may contain
 application names, refs, coordinates, key names, and local screenshot paths.
@@ -660,11 +773,16 @@ gnome-desktop-bridge-cli access control --app 'org.mozilla.*' --app 'Firefox'
 gnome-desktop-bridge-cli access all --portal-input
 gnome-desktop-bridge-cli access all --portal-input --yes-i-understand
 
-# Feature gates
+# Feature gates and animations
 gnome-desktop-bridge-cli feature screenshots on
 gnome-desktop-bridge-cli feature launch-apps off
+gnome-desktop-bridge-cli feature overlay on
+gnome-desktop-bridge-cli motion 250
 
-# Emergency stop
+# Name this client in the audit log and on screen
+gnome-desktop-bridge-cli --client Claude call hello --args '{"name":"Claude"}'
+
+# Emergency stop (works even when the daemon is down)
 gnome-desktop-bridge-cli stop-all
 ```
 
@@ -677,7 +795,8 @@ An AI that encounters this project for the first time must follow this protocol:
 
 1. Do not assume that the bridge is running: check `/health`.
 2. Read the token from the user-specified file without printing it in the response/log.
-3. Call `capabilities`, then `get_state`.
+3. Call `hello` with your name, then `capabilities` and `get_state`. Send
+   `X-Bridge-Client: <your name>` with every request.
 4. If the mode is insufficient, ask the person to change it in the Control Center. Do not change
    `settings.json` yourself.
 5. Start with AT-SPI: `list_apps` → `snapshot` → semantic action.
@@ -687,7 +806,7 @@ An AI that encounters this project for the first time must follow this protocol:
 9. Do not read password fields; consider `[REDACTED]` as the final value.
 10. For global input, ensure `accessMode == all`, feature gate, and active portal session.
 11. Do not start a portal session without a direct user task: the dialog requires attention.
-12. After the task, call `stop_all` if ALL DESKTOP is no longer needed.
+12. After the task, call `goodbye`, and `stop_all` if ALL DESKTOP is no longer needed.
 13. If a modifier was pressed, send the corresponding release event in a `finally` block.
 14. On `stale_reference`, repeat discovery instead of guessing a new ref.
 15. On `portal_cancelled`, do not repeat the dialog indefinitely.
@@ -697,6 +816,7 @@ Recommended machine workflow:
 
 ```text
 health
+  -> hello {"name": "..."}
   -> capabilities
   -> get_state
   -> list_apps
@@ -706,7 +826,7 @@ health
   -> (human confirmation if consequential)
   -> invoke/fill
   -> snapshot to verify outcome
-  -> stop_all when elevated access is no longer needed
+  -> goodbye (and stop_all when elevated access is no longer needed)
 ```
 
 ### Minimal Python Client
@@ -728,6 +848,7 @@ request = urllib.request.Request(
     headers={
         "Authorization": f"Bearer {token}",
         "Content-Type": "application/json",
+        "X-Bridge-Client": "my-agent",
     },
 )
 with urllib.request.urlopen(request) as response:
@@ -859,6 +980,18 @@ systemctl --user restart gnome-desktop-bridge
 gnome-desktop-bridge-cli stop-all
 ```
 
+It writes `Off` to the settings file first, so it works even when the daemon is down;
+the daemon closes the portal session within a second of seeing the change.
+
+### No on-screen animations
+
+- Log out and back in once after the first installation.
+- `gnome-extensions info gnome-desktop-bridge-overlay@woodywizard.github.io` should say
+  `State: ACTIVE`; otherwise `gnome-extensions enable …`.
+- Control Center → **Animations** shows whether the extension is connected.
+- Animations appear only while an agent is connected and `overlayEnabled` is on.
+- `journalctl --user -b | grep -i "desktop bridge"` shows extension errors.
+
 If the daemon hangs, disable the service; the portal session will close when the client disappears:
 
 ```bash
@@ -880,6 +1013,7 @@ Tests:
 ```bash
 python3 -m unittest discover -v
 python3 -m compileall -q gnome_desktop_bridge tests
+gjs -m shell-extension/*/format.js  # syntax check
 desktop-file-validate data/io.github.local.GnomeDesktopBridge.desktop
 systemd-analyze --user verify systemd/gnome-desktop-bridge.service
 ```
@@ -902,6 +1036,12 @@ gnome_desktop_bridge/
   policy.py            # access-mode matrix and app allowlist
   portal_backend.py    # Screenshot/RemoteDesktop/ScreenCast D-Bus APIs
   server.py            # authenticated HTTP + SSE daemon
+  shell_backend.py     # window-origin lookup through the Shell extension
+shell-extension/       # GNOME Shell overlay, indicator, window locator
+  …/connection.js      # authenticated SSE client with reconnect
+  …/overlay.js         # glow, agent cursor, ripples, highlights, key caps, pill
+  …/indicator.js       # top-bar indicator and emergency stop
+  …/windows.js         # D-Bus WindowOrigin for Wayland coordinates
 data/                  # desktop entry
 scripts/               # launch/install/uninstall helpers
 systemd/               # hardened user service
@@ -915,9 +1055,8 @@ The MVP uses compatible `NotifyPointer*`/`NotifyKeyboard*` methods for RemoteDes
 Other possible improvements:
 
 - PipeWire frame capture for consented real-time visual debugging;
-- optional GNOME Shell indicator with constantly visible mode/session state;
 - Unix domain socket and peer-credential authentication;
-- per-client tokens/scopes and rotation without restart;
+- per-client tokens/scopes;
 - persistent encrypted audit with retention policy;
 - action confirmation broker for consequential operations;
 - better multi-monitor/fractional-scale calibration;

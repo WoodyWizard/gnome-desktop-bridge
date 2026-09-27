@@ -1,6 +1,6 @@
 [Unit]
 Description=GNOME Desktop Bridge (local consent-gated automation)
-Documentation=file:%h/Projects/gnome-desktop-bridge/README.md
+Documentation=https://github.com/WoodyWizard/gnome-desktop-bridge
 After=graphical-session.target
 PartOf=graphical-session.target
 
@@ -24,9 +24,11 @@ KeyringMode=private
 PrivateDevices=yes
 ProtectSystem=strict
 ProtectHome=read-only
-ReadWritePaths=%h/.config/gnome-desktop-bridge
-ReadWritePaths=%h/.local/share/gnome-desktop-bridge
-ReadWritePaths=%t/gnome-desktop-bridge
+# "-" keeps a missing directory from failing namespace setup; the daemon
+# creates them on first run anyway.
+ReadWritePaths=-%h/.config/gnome-desktop-bridge
+ReadWritePaths=-%h/.local/share/gnome-desktop-bridge
+ReadWritePaths=-%t/gnome-desktop-bridge
 ProtectKernelTunables=yes
 ProtectKernelModules=yes
 ProtectKernelLogs=yes

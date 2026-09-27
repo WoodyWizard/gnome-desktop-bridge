@@ -6,8 +6,11 @@ project_root="$(cd -- "$script_dir/.." && pwd)"
 bin_dir="${HOME}/.local/bin"
 unit_dir="${XDG_CONFIG_HOME:-${HOME}/.config}/systemd/user"
 desktop_dir="${XDG_DATA_HOME:-${HOME}/.local/share}/applications"
+extension_uuid="gnome-desktop-bridge-overlay@woodywizard.github.io"
+extension_dir="${XDG_DATA_HOME:-${HOME}/.local/share}/gnome-shell/extensions"
 
 systemctl --user disable --now gnome-desktop-bridge.service >/dev/null 2>&1 || true
+gnome-extensions disable "$extension_uuid" >/dev/null 2>&1 || true
 
 remove_our_link() {
   local source="$1"
@@ -26,6 +29,9 @@ remove_our_link \
 remove_our_link \
   "$project_root/data/io.github.local.GnomeDesktopBridge.desktop" \
   "$desktop_dir/io.github.local.GnomeDesktopBridge.desktop"
+remove_our_link \
+  "$project_root/shell-extension/$extension_uuid" \
+  "$extension_dir/$extension_uuid"
 
 systemctl --user daemon-reload
 

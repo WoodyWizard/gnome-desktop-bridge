@@ -1,0 +1,9 @@
+{
+  "uuid": "gnome-desktop-bridge-overlay@woodywizard.github.io",
+  "name": "Desktop Bridge Overlay",
+  "description": "Shows what an AI agent connected to GNOME Desktop Bridge is doing: an edge glow while it is connected, an animated agent cursor, click ripples, highlighted targets, and keystrokes. Adds a top-bar indicator with an emergency stop.",
+  "shell-version": ["50"],
+  "session-modes": ["user"],
+  "url": "https://github.com/WoodyWizard/gnome-desktop-bridge",
+  "version": 1
+}

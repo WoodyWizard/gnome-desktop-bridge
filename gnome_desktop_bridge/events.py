@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import threading
 import time
-from collections import deque
+from collections import Counter, deque
+from collections.abc import Iterator
+from contextlib import contextmanager
 from copy import deepcopy
 from datetime import datetime, timezone
 from typing import Any
@@ -19,6 +21,7 @@ class EventBuffer:
         self._events: deque[dict[str, Any]] = deque(maxlen=max_events)
         self._next_id = 1
         self._condition = threading.Condition()
+        self._subscribers: Counter[str] = Counter()
 
     def resize(self, max_events: int) -> None:
         with self._condition:
@@ -73,3 +76,21 @@ class EventBuffer:
     def latest_id(self) -> int:
         with self._condition:
             return self._next_id - 1
+
+    @contextmanager
+    def subscribed(self, kind: str) -> Iterator[None]:
+        """Count a live stream consumer, e.g. the on-screen overlay."""
+
+        with self._condition:
+            self._subscribers[kind] += 1
+        try:
+            yield
+        finally:
+            with self._condition:
+                self._subscribers[kind] -= 1
+                if self._subscribers[kind] <= 0:
+                    del self._subscribers[kind]
+
+    def subscriber_count(self, kind: str) -> int:
+        with self._condition:
+            return self._subscribers.get(kind, 0)

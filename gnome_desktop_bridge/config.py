@@ -18,6 +18,25 @@ APP_ID = "gnome-desktop-bridge"
 DEFAULT_HOST = "127.0.0.1"
 DEFAULT_PORT = 18766
 
+# Public settings.json key -> Settings attribute. The order is the file order.
+SETTINGS_KEYS: dict[str, str] = {
+    "version": "version",
+    "accessMode": "access_mode",
+    "allowedApps": "allowed_apps",
+    "allowScreenshots": "allow_screenshots",
+    "allowPortalInput": "allow_portal_input",
+    "allowLaunchApps": "allow_launch_apps",
+    "persistPortalSession": "persist_portal_session",
+    "redactProtectedText": "redact_protected_text",
+    "overlayEnabled": "overlay_enabled",
+    "overlayShowKeys": "overlay_show_keys",
+    "overlayEdgeGlow": "overlay_edge_glow",
+    "pointerMotionMs": "pointer_motion_ms",
+    "maxEvents": "max_events",
+    "host": "host",
+    "port": "port",
+}
+
 
 def _xdg_path(env_name: str, fallback: Path) -> Path:
     value = os.environ.get(env_name)
@@ -67,6 +86,10 @@ class Settings:
     allow_launch_apps: bool = False
     persist_portal_session: bool = False
     redact_protected_text: bool = True
+    overlay_enabled: bool = True
+    overlay_show_keys: bool = True
+    overlay_edge_glow: bool = True
+    pointer_motion_ms: int = 200
     max_events: int = 2000
     host: str = DEFAULT_HOST
     port: int = DEFAULT_PORT
@@ -77,6 +100,7 @@ class Settings:
         self.validate()
 
     def validate(self) -> None:
+        _validate_field_types({item.name: getattr(self, item.name) for item in fields(self)})
         if self.version != 1:
             raise InvalidRequest(f"Unsupported settings version: {self.version}")
         if self.access_mode not in {"off", "observe", "control", "all"}:
@@ -93,46 +117,25 @@ class Settings:
             raise InvalidRequest("port must be between 1024 and 65535")
         if not 100 <= self.max_events <= 20_000:
             raise InvalidRequest("maxEvents must be between 100 and 20000")
+        if not 0 <= self.pointer_motion_ms <= 2000:
+            raise InvalidRequest("pointerMotionMs must be between 0 and 2000")
 
     def to_json_dict(self) -> dict[str, Any]:
-        return {
-            "version": self.version,
-            "accessMode": self.access_mode,
-            "allowedApps": list(self.allowed_apps or []),
-            "allowScreenshots": self.allow_screenshots,
-            "allowPortalInput": self.allow_portal_input,
-            "allowLaunchApps": self.allow_launch_apps,
-            "persistPortalSession": self.persist_portal_session,
-            "redactProtectedText": self.redact_protected_text,
-            "maxEvents": self.max_events,
-            "host": self.host,
-            "port": self.port,
-        }
+        result = {key: getattr(self, name) for key, name in SETTINGS_KEYS.items()}
+        result["allowedApps"] = list(self.allowed_apps or [])
+        return result
 
     @classmethod
     def from_json_dict(cls, raw: dict[str, Any]) -> "Settings":
         if not isinstance(raw, dict):
             raise InvalidRequest("settings.json must contain a JSON object")
-        known = {
-            "version": "version",
-            "accessMode": "access_mode",
-            "allowedApps": "allowed_apps",
-            "allowScreenshots": "allow_screenshots",
-            "allowPortalInput": "allow_portal_input",
-            "allowLaunchApps": "allow_launch_apps",
-            "persistPortalSession": "persist_portal_session",
-            "redactProtectedText": "redact_protected_text",
-            "maxEvents": "max_events",
-            "host": "host",
-            "port": "port",
-        }
-        unexpected = sorted(set(raw) - set(known))
+        unexpected = sorted(set(raw) - set(SETTINGS_KEYS))
         if unexpected:
             raise InvalidRequest(
                 "Unknown settings keys",
                 details={"keys": unexpected},
             )
-        kwargs = {known[key]: value for key, value in raw.items()}
+        kwargs = {SETTINGS_KEYS[key]: value for key, value in raw.items()}
         _validate_field_types(kwargs)
         return cls(**kwargs)
 
@@ -144,11 +147,14 @@ def _validate_field_types(values: dict[str, Any]) -> None:
         "allow_launch_apps",
         "persist_portal_session",
         "redact_protected_text",
+        "overlay_enabled",
+        "overlay_show_keys",
+        "overlay_edge_glow",
     }
     for name in bool_fields & values.keys():
         if type(values[name]) is not bool:
             raise InvalidRequest(f"{name} must be a boolean")
-    for name in {"version", "max_events", "port"} & values.keys():
+    for name in {"version", "max_events", "port", "pointer_motion_ms"} & values.keys():
         if type(values[name]) is not int:
             raise InvalidRequest(f"{name} must be an integer")
     for name in {"access_mode", "host"} & values.keys():
@@ -312,6 +318,39 @@ def _read_token(path: Path) -> str:
     except ValueError as exc:
         raise InvalidRequest("The token file is not hexadecimal") from exc
     return token
+
+
+class TokenStore:
+    """Serve the bearer token and pick up a rotated token without a restart.
+
+    A token file that disappears keeps the current token (nothing replaced it),
+    but a replacement that cannot be validated fails closed: no token matches
+    until a valid file is written again.
+    """
+
+    def __init__(self, paths: AppPaths | None = None) -> None:
+        self.paths = paths or AppPaths.discover()
+        self._lock = threading.Lock()
+        self._token: str | None = load_or_create_token(self.paths)
+        self._stamp = self._file_stamp()
+
+    def _file_stamp(self) -> tuple[int, int, int] | None:
+        try:
+            metadata = self.paths.token_file.lstat()
+        except OSError:
+            return None
+        return metadata.st_ino, metadata.st_mtime_ns, metadata.st_size
+
+    def get(self) -> str | None:
+        with self._lock:
+            stamp = self._file_stamp()
+            if stamp is not None and stamp != self._stamp:
+                self._stamp = stamp
+                try:
+                    self._token = _read_token(self.paths.token_file)
+                except InvalidRequest:
+                    self._token = None
+            return self._token
 
 
 class SettingsStore:
