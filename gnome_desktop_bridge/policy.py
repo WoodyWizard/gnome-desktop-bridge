@@ -25,7 +25,7 @@ LEVEL_BY_NAME = {
     "all": AccessLevel.ALL,
 }
 
-ALWAYS_ACTIONS = {"ping", "capabilities", "get_state", "stop_all"}
+ALWAYS_ACTIONS = {"ping", "capabilities", "get_state", "stop_all", "hello", "goodbye"}
 OBSERVE_ACTIONS = {"list_apps", "snapshot", "screenshot", "list_launchers"}
 SCOPED_CONTROL_ACTIONS = {"invoke", "fill", "focus", "click", "launch_app"}
 GLOBAL_CONTROL_ACTIONS = {

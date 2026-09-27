@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import json
+import socket
 import threading
+import time
 import unittest
 import urllib.error
 import urllib.request
@@ -15,8 +17,8 @@ class FakeDispatcher:
     def state(self) -> dict[str, Any]:
         return {"accessMode": "off"}
 
-    def dispatch(self, payload: dict[str, Any]) -> dict[str, Any]:
-        return {"received": payload}
+    def dispatch(self, payload: dict[str, Any], *, client: str = "api") -> dict[str, Any]:
+        return {"received": payload, "client": client}
 
 
 class ServerIntegrationTests(unittest.TestCase):
@@ -99,6 +101,53 @@ class ServerIntegrationTests(unittest.TestCase):
         )
         self.assertEqual(status, 200)
         self.assertEqual(payload["result"]["received"], command)
+
+    def test_client_header_is_forwarded_and_sanitized(self) -> None:
+        request = urllib.request.Request(
+            self.base_url + "/api/command",
+            data=json.dumps({"action": "ping"}).encode(),
+            headers={
+                "Authorization": f"Bearer {self.token}",
+                "Content-Type": "application/json",
+                "X-Bridge-Client": "Claude",
+            },
+            method="POST",
+        )
+        with urllib.request.urlopen(request, timeout=2) as response:
+            self.assertEqual(json.load(response)["result"]["client"], "Claude")
+
+    def test_non_ascii_authorization_is_rejected_cleanly(self) -> None:
+        status, payload = self._open("/api/status", token="\u00e9" * 64)
+        self.assertEqual(status, 401)
+        self.assertEqual(payload["error"]["code"], "unauthorized")
+
+    def test_non_finite_json_numbers_are_rejected(self) -> None:
+        request = urllib.request.Request(
+            self.base_url + "/api/command",
+            data=b'{"action": "pointer_move", "args": {"x": NaN, "y": 1}}',
+            headers={"Authorization": f"Bearer {self.token}", "Content-Type": "application/json"},
+            method="POST",
+        )
+        with self.assertRaises(urllib.error.HTTPError) as raised:
+            urllib.request.urlopen(request, timeout=2)
+        self.assertEqual(raised.exception.code, 400)
+        raised.exception.close()
+
+    def test_event_stream_counts_overlay_until_the_client_disconnects(self) -> None:
+        connection = socket.create_connection(("127.0.0.1", self.server.server_port), timeout=2)
+        connection.sendall(
+            (
+                "GET /api/events/stream HTTP/1.1\r\nHost: 127.0.0.1\r\n"
+                f"Authorization: Bearer {self.token}\r\nX-Bridge-Client: overlay\r\n\r\n"
+            ).encode()
+        )
+        self.assertIn(b"200", connection.recv(1024))
+        self.assertEqual(self.events.subscriber_count("overlay"), 1)
+        connection.close()
+        deadline = time.monotonic() + 3
+        while self.events.subscriber_count("overlay") and time.monotonic() < deadline:
+            time.sleep(0.05)
+        self.assertEqual(self.events.subscriber_count("overlay"), 0)
 
     def test_api_rejects_dns_rebinding_host(self) -> None:
         status, payload = self._open(

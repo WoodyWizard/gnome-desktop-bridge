@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import base64
+import math
 import os
 import secrets
 import shutil
@@ -39,6 +40,31 @@ BUTTON_CODES = {
     "side": 0x113,
     "extra": 0x114,
 }
+
+AXIS_VERTICAL = 0
+AXIS_HORIZONTAL = 1
+
+# Characters that have no printable keysym but a well-known key.
+CONTROL_CHARACTER_KEYS = {"\n": "Return", "\t": "Tab", "\b": "BackSpace", "\x1b": "Escape"}
+
+MAX_SCREENSHOTS = 100
+MOTION_STEP_MS = 12
+DOUBLE_CLICK_GAP_S = 0.06
+
+
+def _number(value: Any, name: str) -> float:
+    """Accept a finite JSON number; bool is an int subclass and is rejected."""
+
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise InvalidRequest(f"{name} must be a number")
+    number = float(value)
+    if not math.isfinite(number):
+        raise InvalidRequest(f"{name} must be finite")
+    return number
+
+
+def _ease_in_out_cubic(t: float) -> float:
+    return 4 * t * t * t if t < 0.5 else 1 - (-2 * t + 2) ** 3 / 2
 
 
 @dataclass(frozen=True, slots=True)
@@ -89,6 +115,7 @@ class PortalBackend:
         self._session_signal_id: int | None = None
         self._devices = 0
         self._streams: list[PortalStream] = []
+        self._pointer: tuple[float, float] | None = None
         self._restore_token_file = self.paths.data_dir / "portal-restore-token"
 
     def _ensure(self) -> tuple[Any, Any, Any]:
@@ -343,6 +370,7 @@ class PortalBackend:
         destination = self.paths.screenshots_dir / f"screenshot-{stamp}-{secrets.token_hex(4)}.png"
         shutil.copyfile(source, destination)
         destination.chmod(0o600)
+        self._prune_screenshots()
         payload: dict[str, Any] = {
             "path": str(destination),
             "size": destination.stat().st_size,
@@ -353,6 +381,24 @@ class PortalBackend:
                 raise InvalidRequest("Screenshot is too large to return as base64")
             payload["base64"] = base64.b64encode(destination.read_bytes()).decode("ascii")
         return payload
+
+    def _prune_screenshots(self) -> None:
+        """Keep the bridge's private screenshot directory bounded."""
+
+        try:
+            candidates = [
+                item
+                for item in self.paths.screenshots_dir.glob("screenshot-*.png")
+                if item.is_file() and not item.is_symlink()
+            ]
+            candidates.sort(key=lambda item: item.stat().st_mtime_ns, reverse=True)
+        except OSError:
+            return
+        for stale in candidates[MAX_SCREENSHOTS:]:
+            try:
+                stale.unlink()
+            except OSError:
+                pass
 
     @staticmethod
     def _path_from_file_uri(uri: str) -> Path:
@@ -569,6 +615,7 @@ class PortalBackend:
         self._pending_session_handle = None
         self._devices = 0
         self._streams = []
+        self._pointer = None
         self._input_cancel.set()
 
     def _close_session_handle(self, session_handle: str) -> None:
@@ -650,20 +697,77 @@ class PortalBackend:
             details={"x": x, "y": y, "streams": [item.as_dict() for item in self._streams]},
         )
 
-    def pointer_move(self, x: float, y: float) -> dict[str, Any]:
-        if not isinstance(x, (int, float)) or not isinstance(y, (int, float)):
-            raise InvalidRequest("x and y must be numbers")
+    def _cancelled(self) -> BridgeError:
+        return BridgeError(
+            "operation_cancelled",
+            "Input was interrupted by a stop request.",
+            409,
+        )
+
+    def _move_to(self, handle: str, x: float, y: float) -> PortalStream:
+        stream = self._stream_for_point(x, y)
+        self._notify(
+            "NotifyPointerMotionAbsolute",
+            "(oa{sv}udd)",
+            (handle, {}, stream.node_id, x - stream.x, y - stream.y),
+        )
+        self._pointer = (x, y)
+        return stream
+
+    def pointer_move(
+        self,
+        x: float,
+        y: float,
+        *,
+        duration_ms: int = 0,
+    ) -> dict[str, Any]:
+        """Move to a global logical point, optionally along an eased path.
+
+        A gradual path looks natural to the person watching and lets hover
+        effects (menus, tooltips) react as they would for a human. The lock is
+        released between steps so status queries and STOP ALL stay responsive.
+        """
+
+        x, y = _number(x, "x"), _number(y, "y")
+        if type(duration_ms) is not int or not 0 <= duration_ms <= 2000:
+            raise InvalidRequest("durationMs must be an integer between 0 and 2000")
         with self._lock:
             handle = self._require_session(DEVICE_POINTER)
-            stream = self._stream_for_point(float(x), float(y))
-            relative_x = float(x) - stream.x
-            relative_y = float(y) - stream.y
-            self._notify(
-                "NotifyPointerMotionAbsolute",
-                "(oa{sv}udd)",
-                (handle, {}, stream.node_id, relative_x, relative_y),
-            )
-            return {"performed": True, "x": x, "y": y, "streamNodeId": stream.node_id}
+            self._stream_for_point(x, y)
+            start = self._pointer
+        if duration_ms and start is not None and start != (x, y):
+            steps = max(2, duration_ms // MOTION_STEP_MS)
+            delay = duration_ms / steps / 1000
+            for index in range(1, steps):
+                if self._input_cancel.wait(delay):
+                    raise self._cancelled()
+                progress = _ease_in_out_cubic(index / steps)
+                step_x = start[0] + (x - start[0]) * progress
+                step_y = start[1] + (y - start[1]) * progress
+                with self._lock:
+                    handle = self._require_session(DEVICE_POINTER)
+                    try:
+                        self._move_to(handle, step_x, step_y)
+                    except InvalidRequest:
+                        # The path may cross a gap between monitors.
+                        continue
+            if self._input_cancel.wait(delay):
+                raise self._cancelled()
+        with self._lock:
+            handle = self._require_session(DEVICE_POINTER)
+            stream = self._move_to(handle, x, y)
+            return {
+                "performed": True,
+                "x": x,
+                "y": y,
+                "durationMs": duration_ms if start is not None else 0,
+                "streamNodeId": stream.node_id,
+            }
+
+    @property
+    def pointer_position(self) -> tuple[float, float] | None:
+        with self._lock:
+            return self._pointer
 
     def pointer_click(
         self,
@@ -671,9 +775,13 @@ class PortalBackend:
         button: str | int = "left",
         x: float | None = None,
         y: float | None = None,
+        count: int = 1,
+        duration_ms: int = 0,
     ) -> dict[str, Any]:
         if (x is None) != (y is None):
             raise InvalidRequest("x and y must be provided together")
+        if type(count) is not int or not 1 <= count <= 3:
+            raise InvalidRequest("count must be 1, 2, or 3")
         if isinstance(button, str):
             button_code = BUTTON_CODES.get(button.casefold())
         elif type(button) is int:
@@ -683,40 +791,68 @@ class PortalBackend:
         if button_code is None or not 0 <= int(button_code) <= 0x7FFFFFFF:
             raise InvalidRequest("Unknown pointer button")
         with self._lock:
-            handle = self._require_session(DEVICE_POINTER)
-            if x is not None and y is not None:
-                self.pointer_move(x, y)
-            self._notify(
-                "NotifyPointerButton",
-                "(oa{sv}iu)",
-                (handle, {}, int(button_code), KEY_PRESSED),
-            )
-            self._notify(
-                "NotifyPointerButton",
-                "(oa{sv}iu)",
-                (handle, {}, int(button_code), KEY_RELEASED),
-            )
-            return {
-                "performed": True,
-                "button": button,
-                "buttonCode": int(button_code),
-                "x": x,
-                "y": y,
-            }
+            self._require_session(DEVICE_POINTER)
+        if x is not None and y is not None:
+            moved = self.pointer_move(x, y, duration_ms=duration_ms)
+            x, y = moved["x"], moved["y"]
+        for index in range(count):
+            if index and self._input_cancel.wait(DOUBLE_CLICK_GAP_S):
+                raise self._cancelled()
+            with self._lock:
+                handle = self._require_session(DEVICE_POINTER)
+                self._notify(
+                    "NotifyPointerButton",
+                    "(oa{sv}iu)",
+                    (handle, {}, int(button_code), KEY_PRESSED),
+                )
+                self._notify(
+                    "NotifyPointerButton",
+                    "(oa{sv}iu)",
+                    (handle, {}, int(button_code), KEY_RELEASED),
+                )
+        return {
+            "performed": True,
+            "button": button,
+            "buttonCode": int(button_code),
+            "count": count,
+            "x": x,
+            "y": y,
+        }
 
-    def scroll(self, dx: float = 0.0, dy: float = 0.0) -> dict[str, Any]:
-        if not isinstance(dx, (int, float)) or not isinstance(dy, (int, float)):
-            raise InvalidRequest("dx and dy must be numbers")
-        if abs(float(dx)) > 10_000 or abs(float(dy)) > 10_000:
+    def scroll(
+        self,
+        dx: float = 0.0,
+        dy: float = 0.0,
+        *,
+        discrete: bool = False,
+    ) -> dict[str, Any]:
+        """Scroll by smooth pixel deltas, or by wheel clicks when discrete."""
+
+        dx, dy = _number(dx, "dx"), _number(dy, "dy")
+        if discrete:
+            if not dx.is_integer() or not dy.is_integer() or max(abs(dx), abs(dy)) > 100:
+                raise InvalidRequest("Discrete scroll steps must be integers up to 100")
+        elif abs(dx) > 10_000 or abs(dy) > 10_000:
             raise InvalidRequest("Scroll delta is too large")
         with self._lock:
             handle = self._require_session(DEVICE_POINTER)
-            self._notify(
-                "NotifyPointerAxis",
-                "(oa{sv}dd)",
-                (handle, {}, float(dx), float(dy)),
-            )
-            return {"performed": True, "dx": dx, "dy": dy}
+            if discrete:
+                for axis, steps in ((AXIS_VERTICAL, dy), (AXIS_HORIZONTAL, dx)):
+                    if steps:
+                        self._notify(
+                            "NotifyPointerAxisDiscrete",
+                            "(oa{sv}ui)",
+                            (handle, {}, axis, int(steps)),
+                        )
+            else:
+                # finish marks the end of the gesture so kinetic scrolling in
+                # the target application does not wait for more motion.
+                self._notify(
+                    "NotifyPointerAxis",
+                    "(oa{sv}dd)",
+                    (handle, {"finish": self._glib.Variant("b", True)}, dx, dy),
+                )
+            return {"performed": True, "dx": dx, "dy": dy, "discrete": discrete}
 
     def _keyval(self, key: str | int) -> int:
         if type(key) is int:
@@ -727,6 +863,7 @@ class PortalBackend:
             raise InvalidRequest("key must be a keysym name, one character, or an integer")
         if len(key) > 100:
             raise InvalidRequest("key name is too long")
+        key = CONTROL_CHARACTER_KEYS.get(key, key)
         try:
             import gi
 
@@ -739,29 +876,55 @@ class PortalBackend:
                 value = int(Gdk.keyval_from_name(key))
         except Exception as exc:
             raise BackendUnavailable("gdk", "Cannot resolve the requested keyboard key") from exc
-        if value == 0:
+        if value == 0 or value == 0xFFFFFF:  # 0xFFFFFF is GDK_KEY_VoidSymbol
             raise InvalidRequest("Unknown keyboard key", details={"key": key})
         return value
 
-    def key(self, key: str | int, *, event: str = "tap") -> dict[str, Any]:
-        if event not in {"tap", "press", "release"}:
-            raise InvalidRequest("event must be tap, press, or release")
+    def _send_key(self, keyval: int, state: int) -> None:
         with self._lock:
             handle = self._require_session(DEVICE_KEYBOARD)
-            keyval = self._keyval(key)
+            self._notify("NotifyKeyboardKeysym", "(oa{sv}iu)", (handle, {}, keyval, state))
+
+    def key(
+        self,
+        key: str | int,
+        *,
+        event: str = "tap",
+        modifiers: list[str | int] | None = None,
+    ) -> dict[str, Any]:
+        """Send one key; modifiers are held around it and always released."""
+
+        if not isinstance(event, str) or event not in {"tap", "press", "release"}:
+            raise InvalidRequest("event must be tap, press, or release")
+        if modifiers is None:
+            modifiers = []
+        if not isinstance(modifiers, list) or len(modifiers) > 8:
+            raise InvalidRequest("modifiers must be a list of at most 8 keys")
+        if modifiers and event != "tap":
+            raise InvalidRequest("modifiers can be combined only with event tap")
+        with self._lock:
+            self._require_session(DEVICE_KEYBOARD)
+        keyval = self._keyval(key)
+        modifier_values = [self._keyval(item) for item in modifiers]
+        pressed: list[int] = []
+        try:
+            for value in modifier_values:
+                self._send_key(value, KEY_PRESSED)
+                pressed.append(value)
             if event in {"tap", "press"}:
-                self._notify(
-                    "NotifyKeyboardKeysym",
-                    "(oa{sv}iu)",
-                    (handle, {}, keyval, KEY_PRESSED),
-                )
+                self._send_key(keyval, KEY_PRESSED)
             if event in {"tap", "release"}:
-                self._notify(
-                    "NotifyKeyboardKeysym",
-                    "(oa{sv}iu)",
-                    (handle, {}, keyval, KEY_RELEASED),
-                )
-            return {"performed": True, "key": key, "keysym": keyval, "event": event}
+                self._send_key(keyval, KEY_RELEASED)
+        finally:
+            for value in reversed(pressed):
+                try:
+                    self._send_key(value, KEY_RELEASED)
+                except BridgeError:
+                    pass
+        result: dict[str, Any] = {"performed": True, "key": key, "keysym": keyval, "event": event}
+        if modifiers:
+            result["modifiers"] = modifiers
+        return result
 
     def type_text(self, text: str, *, interval_ms: int = 10) -> dict[str, Any]:
         if not isinstance(text, str):
@@ -772,20 +935,17 @@ class PortalBackend:
             raise InvalidRequest("intervalMs must be an integer between 0 and 1000")
         with self._lock:
             self._require_session(DEVICE_KEYBOARD)
-        for character in text:
+        # Resolve every character first so an unsupported one fails before
+        # anything has been typed.
+        normalized = text.replace("\r\n", "\n").replace("\r", "\n")
+        keyvals = [self._keyval(character) for character in normalized]
+        for keyval in keyvals:
             if self._input_cancel.is_set():
-                raise BridgeError(
-                    "operation_cancelled",
-                    "Text input was interrupted by a stop request.",
-                    409,
-                )
-            self.key(character)
+                raise self._cancelled()
+            self._send_key(keyval, KEY_PRESSED)
+            self._send_key(keyval, KEY_RELEASED)
             if interval_ms and self._input_cancel.wait(interval_ms / 1000):
-                raise BridgeError(
-                    "operation_cancelled",
-                    "Text input was interrupted by a stop request.",
-                    409,
-                )
+                raise self._cancelled()
         return {"performed": True, "textLength": len(text)}
 
     def shutdown(self) -> None:

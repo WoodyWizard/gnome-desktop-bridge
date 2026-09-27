@@ -10,6 +10,8 @@ from gnome_desktop_bridge.config import (
     AppPaths,
     Settings,
     SettingsStore,
+    TokenStore,
+    _atomic_write,
     load_or_create_token,
     load_settings,
     save_settings,
@@ -96,6 +98,43 @@ class SettingsTests(unittest.TestCase):
             paths.token_file.symlink_to(target)
             with self.assertRaises(InvalidRequest):
                 load_or_create_token(paths)
+
+
+    def test_overlay_settings_round_trip_and_old_files_get_defaults(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            paths = temporary_paths(Path(directory))
+            paths.ensure()
+            # A file written before the overlay existed must still load.
+            paths.settings_file.write_text('{"version": 1, "accessMode": "observe"}')
+            paths.settings_file.chmod(0o600)
+            loaded = load_settings(paths)
+            self.assertTrue(loaded.overlay_enabled)
+            self.assertEqual(loaded.pointer_motion_ms, 200)
+            save_settings(Settings(overlay_show_keys=False, pointer_motion_ms=0), paths)
+            raw = json.loads(paths.settings_file.read_text())
+            self.assertFalse(raw["overlayShowKeys"])
+            self.assertEqual(raw["pointerMotionMs"], 0)
+
+    def test_field_types_are_checked_for_programmatic_updates_too(self) -> None:
+        with self.assertRaises(InvalidRequest):
+            Settings(pointer_motion_ms=True)  # type: ignore[arg-type]
+        with self.assertRaises(InvalidRequest):
+            Settings(overlay_enabled="yes")  # type: ignore[arg-type]
+        with self.assertRaises(InvalidRequest):
+            Settings(pointer_motion_ms=5000)
+
+
+class TokenStoreTests(unittest.TestCase):
+    def test_rotation_is_picked_up_and_broken_replacement_fails_closed(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            paths = temporary_paths(Path(directory))
+            store = TokenStore(paths)
+            first = store.get()
+            self.assertEqual(first, load_or_create_token(paths))
+            _atomic_write(paths.token_file, "b" * 64 + "\n")
+            self.assertEqual(store.get(), "b" * 64)
+            _atomic_write(paths.token_file, "not a token\n")
+            self.assertIsNone(store.get())
 
 
 if __name__ == "__main__":

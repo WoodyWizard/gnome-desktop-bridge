@@ -273,9 +273,11 @@ class AtspiBackend:
                 node["childrenTruncated"] = True
             return node
 
-        # Accessible proxies can occasionally expose cycles. The bus/object pair
-        # is stable enough for cycle detection without relying on proxy hashing.
-        proxy_key = (str(self._safe(accessible.get_id, "")), str(accessible))
+        # Accessible proxies can occasionally expose cycles. Every node of one
+        # snapshot belongs to one application, so its D-Bus object path is a
+        # stable key; Python wrapper identity is not.
+        object_path = getattr(accessible, "path", None)
+        proxy_key = (str(identity.pid), str(object_path or id(accessible)))
         if proxy_key in visited:
             node["cycle"] = True
             return node
@@ -467,6 +469,49 @@ class AtspiBackend:
             if not result:
                 raise BackendUnavailable("atspi", "The application rejected the focus request")
             return {"ref": ref, "performed": True}
+
+    def _toplevel(self, accessible: Any) -> Any | None:
+        """Return the window-like ancestor directly below the application."""
+
+        current = accessible
+        for _ in range(64):
+            parent = self._safe(current.get_parent)
+            if parent is None:
+                return None
+            role_name = str(self._safe(parent.get_role_name, "") or "")
+            if role_name == "application":
+                return current
+            current = parent
+        return None
+
+    def describe_ref(self, ref: str) -> dict[str, Any]:
+        """Describe an element for pointer targeting and on-screen feedback."""
+
+        with self._lock:
+            target = self.resolve(ref)
+            accessible = target.accessible
+            role_name = self._bounded(
+                self._safe(accessible.get_role_name, "unknown") or "unknown", 200
+            )
+            protected = self._is_protected(self._safe(accessible.get_role), role_name)
+            name = "" if protected else self._bounded(self._safe(accessible.get_name, "") or "", 200)
+            result: dict[str, Any] = {
+                "ref": ref,
+                "app": target.app,
+                "role": role_name,
+                "name": name,
+                "bounds": self._bounds(accessible),
+                "window": None,
+            }
+            window = self._toplevel(accessible)
+            if window is not None:
+                window_bounds = self._bounds(window)
+                if window_bounds is not None:
+                    result["window"] = {
+                        "name": self._bounded(self._safe(window.get_name, "") or "", 1000),
+                        "bounds": window_bounds,
+                    }
+            return result
 
     def bounds_for_ref(self, ref: str) -> tuple[AppIdentity, dict[str, int]]:
         with self._lock:

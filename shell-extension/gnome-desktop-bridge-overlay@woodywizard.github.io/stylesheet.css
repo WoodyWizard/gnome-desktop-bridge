@@ -1,0 +1,256 @@
+/* Desktop Bridge Overlay. Violet/cyan = agent, amber/rose = input control. */
+
+.gdb-cursor-tag {
+  color: #ffffff;
+  font-size: 10.5pt;
+  font-weight: 700;
+  padding: 3px 9px;
+  border-radius: 999px;
+  background-gradient-direction: horizontal;
+  background-gradient-start: rgba(124, 58, 237, 0.95);
+  background-gradient-end: rgba(8, 145, 178, 0.95);
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.35);
+}
+
+.gdb-trail {
+  border-radius: 999px;
+  background-color: rgba(167, 139, 250, 0.55);
+  box-shadow: 0 0 8px rgba(34, 211, 238, 0.6);
+}
+
+.gdb-ripple {
+  border-radius: 999px;
+  border: 3.5px solid rgba(167, 139, 250, 1);
+  box-shadow: 0 0 18px rgba(139, 92, 246, 0.8);
+}
+
+.gdb-ripple-secondary {
+  border-color: rgba(251, 191, 36, 0.95);
+  box-shadow: 0 0 14px rgba(245, 158, 11, 0.6);
+}
+
+.gdb-ripple-middle {
+  border-color: rgba(34, 211, 238, 0.95);
+  box-shadow: 0 0 14px rgba(8, 145, 178, 0.6);
+}
+
+.gdb-click-dot {
+  border: none;
+  border-radius: 999px;
+  background-color: rgba(167, 139, 250, 0.45);
+  box-shadow: 0 0 20px rgba(139, 92, 246, 0.7);
+}
+
+.gdb-click-dot.gdb-ripple-secondary {
+  background-color: rgba(251, 191, 36, 0.45);
+  box-shadow: 0 0 20px rgba(245, 158, 11, 0.7);
+}
+
+.gdb-click-dot.gdb-ripple-middle {
+  background-color: rgba(34, 211, 238, 0.45);
+  box-shadow: 0 0 20px rgba(8, 145, 178, 0.7);
+}
+
+.gdb-scroll {
+  icon-size: 22px;
+  color: #ffffff;
+  padding: 5px;
+  border-radius: 999px;
+  background-color: rgba(76, 29, 149, 0.82);
+  box-shadow: 0 2px 10px rgba(0, 0, 0, 0.35);
+}
+
+.gdb-target {
+  border-radius: 10px;
+  border: 2px solid rgba(167, 139, 250, 0.95);
+  background-color: rgba(139, 92, 246, 0.12);
+  box-shadow: 0 0 18px rgba(139, 92, 246, 0.55);
+}
+
+.gdb-target-scan {
+  border-radius: 12px;
+  border: 1px solid rgba(34, 211, 238, 0.55);
+  background-color: rgba(34, 211, 238, 0.04);
+  box-shadow: none;
+}
+
+.gdb-scan-line {
+  background-gradient-direction: vertical;
+  background-gradient-start: rgba(34, 211, 238, 0);
+  background-gradient-end: rgba(34, 211, 238, 0.38);
+  border-bottom: 2px solid rgba(165, 243, 252, 0.85);
+}
+
+.gdb-target-tag {
+  color: #ffffff;
+  font-size: 10.5pt;
+  font-weight: 600;
+  padding: 3px 10px;
+  border-radius: 8px;
+  background-color: rgba(46, 16, 101, 0.92);
+  border: 1px solid rgba(167, 139, 250, 0.7);
+  box-shadow: 0 2px 10px rgba(0, 0, 0, 0.35);
+}
+
+.gdb-pill {
+  padding: 8px 10px 8px 14px;
+  border-radius: 999px;
+  background-color: rgba(24, 20, 38, 0.9);
+  border: 1px solid rgba(167, 139, 250, 0.45);
+  box-shadow: 0 4px 22px rgba(76, 29, 149, 0.55);
+  color: #ffffff;
+}
+
+.gdb-pill-error {
+  border-color: rgba(248, 113, 113, 0.9);
+  box-shadow: 0 4px 22px rgba(185, 28, 28, 0.6);
+}
+
+.gdb-pill-row {
+  spacing: 10px;
+}
+
+.gdb-pill-dot {
+  width: 10px;
+  height: 10px;
+  border-radius: 999px;
+  background-gradient-direction: vertical;
+  background-gradient-start: #a78bfa;
+  background-gradient-end: #22d3ee;
+  box-shadow: 0 0 10px rgba(139, 92, 246, 0.9);
+}
+
+.gdb-pill-error .gdb-pill-dot {
+  background-gradient-start: #f87171;
+  background-gradient-end: #ef4444;
+  box-shadow: 0 0 10px rgba(239, 68, 68, 0.9);
+}
+
+.gdb-pill-name {
+  font-weight: 800;
+  font-size: 11pt;
+}
+
+.gdb-pill-activity {
+  font-size: 11pt;
+  color: rgba(255, 255, 255, 0.82);
+}
+
+.gdb-pill-chip {
+  font-size: 8.5pt;
+  font-weight: 800;
+  padding: 2px 9px;
+  border-radius: 999px;
+  color: #ffffff;
+  background-color: rgba(255, 255, 255, 0.14);
+}
+
+.gdb-chip-observe {
+  background-color: rgba(59, 130, 246, 0.85);
+}
+
+.gdb-chip-control {
+  background-color: rgba(16, 185, 129, 0.85);
+}
+
+.gdb-chip-all {
+  background-color: rgba(234, 88, 12, 0.9);
+}
+
+.gdb-chip-input {
+  background-color: rgba(225, 29, 72, 0.92);
+}
+
+.gdb-pill-track {
+  height: 3px;
+  margin: 7px 4px 0 0;
+  border-radius: 2px;
+  background-color: rgba(255, 255, 255, 0.12);
+}
+
+.gdb-pill-bar {
+  border-radius: 2px;
+  background-gradient-direction: horizontal;
+  background-gradient-start: #a78bfa;
+  background-gradient-end: #22d3ee;
+}
+
+.gdb-keys {
+  spacing: 8px;
+  padding: 10px 14px;
+  border-radius: 18px;
+  background-color: rgba(24, 20, 38, 0.86);
+  border: 1px solid rgba(167, 139, 250, 0.4);
+  box-shadow: 0 8px 28px rgba(0, 0, 0, 0.45);
+}
+
+.gdb-keycap {
+  min-width: 26px;
+  color: #ffffff;
+  font-size: 15pt;
+  font-weight: 700;
+  text-align: center;
+  padding: 5px 12px 7px 12px;
+  border-radius: 9px;
+  background-gradient-direction: vertical;
+  background-gradient-start: rgba(255, 255, 255, 0.2);
+  background-gradient-end: rgba(255, 255, 255, 0.07);
+  border: 1px solid rgba(255, 255, 255, 0.22);
+  border-bottom: 3px solid rgba(0, 0, 0, 0.45);
+}
+
+.gdb-keyplus {
+  color: rgba(255, 255, 255, 0.6);
+  font-size: 13pt;
+  font-weight: 700;
+  padding-top: 6px;
+}
+
+.gdb-flash {
+  background-color: #ffffff;
+}
+
+/* Top-bar indicator */
+
+.gdb-indicator-dot {
+  width: 7px;
+  height: 7px;
+  margin-left: 3px;
+  border-radius: 999px;
+  background-color: rgba(255, 255, 255, 0.35);
+}
+
+.gdb-indicator-dot.gdb-mode-observe {
+  background-color: #60a5fa;
+}
+
+.gdb-indicator-dot.gdb-mode-control {
+  background-color: #34d399;
+}
+
+.gdb-indicator-dot.gdb-mode-all {
+  background-color: #fb923c;
+}
+
+.gdb-indicator-dot.gdb-agent {
+  background-color: #a78bfa;
+  box-shadow: 0 0 6px rgba(167, 139, 250, 0.95);
+}
+
+.gdb-indicator-dot.gdb-input {
+  background-color: #f43f5e;
+  box-shadow: 0 0 6px rgba(244, 63, 94, 0.95);
+}
+
+.gdb-menu-title {
+  font-weight: 800;
+}
+
+.gdb-menu-subtitle {
+  font-size: 9.5pt;
+  color: rgba(255, 255, 255, 0.65);
+}
+
+.gdb-menu-stop StIcon {
+  color: #f87171;
+}

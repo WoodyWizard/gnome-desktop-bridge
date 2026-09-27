@@ -10,6 +10,7 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
+from collections.abc import Iterator
 from typing import Any
 
 from . import __version__
@@ -29,12 +30,27 @@ class ClientError(RuntimeError):
 
 
 class BridgeClient:
-    def __init__(self) -> None:
+    """Minimal HTTP client.
+
+    client names the caller for the daemon's audit log and agent presence;
+    "control-center" and "cli-admin" are treated as the human operator.
+    """
+
+    def __init__(self, client: str = "cli", *, retries: int = 20) -> None:
         self.paths = AppPaths.discover()
         settings = SettingsStore(self.paths).get()
         url_host = f"[{settings.host}]" if ":" in settings.host else settings.host
         self.base_url = f"http://{url_host}:{settings.port}"
         self.token = load_or_create_token(self.paths)
+        self.client = client
+        self.retries = max(1, retries)
+
+    def _headers(self, accept: str) -> dict[str, str]:
+        return {
+            "Authorization": f"Bearer {self.token}",
+            "Accept": accept,
+            "X-Bridge-Client": self.client,
+        }
 
     def _request(
         self,
@@ -45,10 +61,7 @@ class BridgeClient:
         timeout: float = 130.0,
     ) -> dict[str, Any]:
         data = None
-        headers = {
-            "Authorization": f"Bearer {self.token}",
-            "Accept": "application/json",
-        }
+        headers = self._headers("application/json")
         if body is not None:
             data = json.dumps(body, ensure_ascii=False).encode("utf-8")
             headers["Content-Type"] = "application/json"
@@ -60,7 +73,7 @@ class BridgeClient:
         )
         payload: dict[str, Any] | None = None
         last_url_error: urllib.error.URLError | None = None
-        for attempt in range(20):
+        for attempt in range(self.retries):
             try:
                 with urllib.request.urlopen(request, timeout=timeout) as response:
                     payload = json.load(response)
@@ -74,7 +87,10 @@ class BridgeClient:
                 raise ClientError(message) from exc
             except urllib.error.URLError as exc:
                 last_url_error = exc
-                if not isinstance(exc.reason, ConnectionRefusedError) or attempt == 19:
+                if (
+                    not isinstance(exc.reason, ConnectionRefusedError)
+                    or attempt == self.retries - 1
+                ):
                     break
                 # systemd considers a simple service active just before Python
                 # finishes binding the loopback socket after a restart.
@@ -100,26 +116,62 @@ class BridgeClient:
         query = urllib.parse.urlencode({"after": after, "limit": limit})
         return self._request(f"/api/events?{query}")
 
-    def follow_events(self, *, after: int = 0) -> None:
+    def stream_events(self, *, after: int = 0) -> Iterator[dict[str, Any]]:
+        """Yield events from the SSE stream until the connection closes."""
+
         query = urllib.parse.urlencode({"after": after})
         request = urllib.request.Request(
             self.base_url + f"/api/events/stream?{query}",
-            headers={
-                "Authorization": f"Bearer {self.token}",
-                "Accept": "text/event-stream",
-            },
+            headers=self._headers("text/event-stream"),
         )
         try:
             with urllib.request.urlopen(request, timeout=None) as response:
                 for raw_line in response:
                     line = raw_line.decode("utf-8", errors="replace").rstrip("\n")
                     if line.startswith("data: "):
-                        event = json.loads(line[6:])
-                        print(json.dumps(event, ensure_ascii=False), flush=True)
-        except KeyboardInterrupt:
-            return
+                        yield json.loads(line[6:])
         except urllib.error.URLError as exc:
             raise ClientError(f"Event stream disconnected: {exc.reason}") from exc
+
+    def follow_events(self, *, after: int = 0, pretty: bool = False) -> None:
+        try:
+            for event in self.stream_events(after=after):
+                if pretty:
+                    print(format_event(event), flush=True)
+                else:
+                    print(json.dumps(event, ensure_ascii=False), flush=True)
+        except KeyboardInterrupt:
+            return
+
+
+def format_event(event: dict[str, Any]) -> str:
+    """Render one audit event as a single human-readable line."""
+
+    data = event.get("data") or {}
+    stamp = str(event.get("timestamp", ""))[11:19]
+    kind = str(event.get("type", ""))
+    detail = ""
+    if kind.startswith("command."):
+        detail = str(data.get("action", ""))
+        client = data.get("client")
+        if client:
+            detail += f"  by {client}"
+        if "durationMs" in data:
+            detail += f"  {data['durationMs']} ms"
+        error = data.get("error")
+        if isinstance(error, dict):
+            detail += f"  {error.get('code')}: {error.get('message')}"
+    elif kind.startswith("agent."):
+        detail = f"{data.get('name', '')} ({data.get('client', '')})"
+        if data.get("reason"):
+            detail += f"  reason={data['reason']}"
+    elif kind == "settings.changed":
+        detail = f"mode={data.get('accessMode')}"
+    elif data:
+        detail = json.dumps(data, ensure_ascii=False, separators=(",", ":"))[:160]
+    level = str(event.get("level", "info"))
+    marker = {"warning": "!", "error": "✗"}.get(level, " ")
+    return f"{stamp} {marker} #{event.get('id', '?'):<6} {kind:<26} {detail}".rstrip()
 
 
 def _print(value: Any, *, compact: bool = False) -> None:
@@ -166,21 +218,32 @@ def _set_access(args: argparse.Namespace) -> dict[str, Any]:
     else:
         changes["allow_portal_input"] = False
     if args.mode == "off":
-        updated, persistence_error = store.force_off()
-        daemon_result: dict[str, Any] | None = None
-        try:
-            daemon_result = BridgeClient().command("stop_all")
-        except ClientError as exc:
-            if persistence_error is not None:
-                raise ClientError(
-                    f"Could not persist Off or reach the daemon: {persistence_error}; {exc}"
-                ) from exc
-        result = updated.to_json_dict()
-        result["settingsPersisted"] = persistence_error is None
-        result["daemonStopped"] = bool(daemon_result and daemon_result.get("stopped"))
-        return result
+        return _stop_everything(store)
     updated = store.update(**changes)
     return updated.to_json_dict()
+
+
+def _stop_everything(store: SettingsStore | None = None) -> dict[str, Any]:
+    """Revoke access on disk first, then ask a running daemon to stop.
+
+    The local write works even when the daemon is down or hung; the daemon's
+    watcher also closes the portal session once it sees the new settings.
+    """
+
+    store = store or SettingsStore()
+    updated, persistence_error = store.force_off()
+    daemon_result: dict[str, Any] | None = None
+    try:
+        daemon_result = BridgeClient("cli-admin", retries=3).command("stop_all")
+    except ClientError as exc:
+        if persistence_error is not None:
+            raise ClientError(
+                f"Could not persist Off or reach the daemon: {persistence_error}; {exc}"
+            ) from exc
+    result = updated.to_json_dict()
+    result["settingsPersisted"] = persistence_error is None
+    result["daemonStopped"] = bool(daemon_result and daemon_result.get("stopped"))
+    return result
 
 
 def _set_feature(args: argparse.Namespace) -> dict[str, Any]:
@@ -190,6 +253,9 @@ def _set_feature(args: argparse.Namespace) -> dict[str, Any]:
         "launch-apps": "allow_launch_apps",
         "persist-portal": "persist_portal_session",
         "redact-protected-text": "redact_protected_text",
+        "overlay": "overlay_enabled",
+        "overlay-keys": "overlay_show_keys",
+        "overlay-glow": "overlay_edge_glow",
     }
     enabled = args.value == "on"
     updated = SettingsStore().update(**{mapping[args.feature]: enabled})
@@ -210,7 +276,8 @@ def _rotate_token(args: argparse.Namespace) -> dict[str, Any]:
     return {
         "rotated": True,
         "tokenFile": str(paths.token_file),
-        "restartRequired": True,
+        # The daemon notices the new file on the next request.
+        "restartRequired": False,
     }
 
 
@@ -218,6 +285,12 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Control GNOME Desktop Bridge")
     parser.add_argument("--version", action="version", version=__version__)
     parser.add_argument("--compact", action="store_true", help="print compact JSON")
+    parser.add_argument(
+        "--client",
+        default="cli",
+        metavar="NAME",
+        help="name shown for this agent in the audit log and on-screen overlay",
+    )
     subparsers = parser.add_subparsers(dest="subcommand", required=True)
 
     subparsers.add_parser("status", help="show current access and portal state")
@@ -231,6 +304,7 @@ def build_parser() -> argparse.ArgumentParser:
     events.add_argument("--after", type=int, default=0)
     events.add_argument("--limit", type=int, default=200)
     events.add_argument("--follow", action="store_true")
+    events.add_argument("--pretty", action="store_true", help="one human-readable line per event")
 
     access = subparsers.add_parser("access", help="change the human-controlled access mode")
     access.add_argument("mode", choices=["off", "observe", "control", "all"])
@@ -255,9 +329,17 @@ def build_parser() -> argparse.ArgumentParser:
             "launch-apps",
             "persist-portal",
             "redact-protected-text",
+            "overlay",
+            "overlay-keys",
+            "overlay-glow",
         ],
     )
     feature.add_argument("value", choices=["on", "off"])
+
+    motion = subparsers.add_parser(
+        "motion", help="set the duration of animated pointer movement (0 = instant)"
+    )
+    motion.add_argument("milliseconds", type=int)
 
     settings = subparsers.add_parser("settings", help="show settings and local paths")
     settings.add_argument("--show-token", action="store_true")
@@ -266,7 +348,10 @@ def build_parser() -> argparse.ArgumentParser:
     token.add_argument("--rotate", action="store_true")
     token.add_argument("--yes", action="store_true")
 
-    subparsers.add_parser("stop-all", help="immediately stop control and switch to Off")
+    subparsers.add_parser(
+        "stop-all",
+        help="immediately stop control and switch to Off, even if the daemon is down",
+    )
     return parser
 
 
@@ -275,21 +360,27 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
     try:
         if args.subcommand == "status":
-            result = BridgeClient().status()
+            result = BridgeClient(args.client).status()
         elif args.subcommand == "capabilities":
-            result = BridgeClient().command("capabilities")
+            result = BridgeClient(args.client).command("capabilities")
         elif args.subcommand == "call":
-            result = BridgeClient().command(args.action, args.args)
+            result = BridgeClient(args.client).command(args.action, args.args)
         elif args.subcommand == "events":
-            client = BridgeClient()
+            client = BridgeClient(args.client)
             if args.follow:
-                client.follow_events(after=args.after)
+                client.follow_events(after=args.after, pretty=args.pretty)
                 return 0
             result = client.events(after=args.after, limit=args.limit)
+            if args.pretty:
+                for event in result.get("events", []):
+                    print(format_event(event))
+                return 0
         elif args.subcommand == "access":
             result = _set_access(args)
         elif args.subcommand == "feature":
             result = _set_feature(args)
+        elif args.subcommand == "motion":
+            result = SettingsStore().update(pointer_motion_ms=args.milliseconds).to_json_dict()
         elif args.subcommand == "settings":
             paths = AppPaths.discover()
             settings = SettingsStore(paths).get()
@@ -310,7 +401,7 @@ def main(argv: list[str] | None = None) -> int:
                 paths = AppPaths.discover()
                 result = {"token": load_or_create_token(paths), "tokenFile": str(paths.token_file)}
         elif args.subcommand == "stop-all":
-            result = BridgeClient().command("stop_all")
+            result = _stop_everything()
         else:  # pragma: no cover - argparse enforces the choices
             parser.error("unknown subcommand")
             return 2

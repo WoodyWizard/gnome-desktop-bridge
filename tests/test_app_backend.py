@@ -6,7 +6,7 @@ import unittest
 from unittest.mock import Mock, patch
 
 from gnome_desktop_bridge.app_backend import AppBackend
-from gnome_desktop_bridge.errors import BackendUnavailable
+from gnome_desktop_bridge.errors import BackendUnavailable, NotFound
 from gnome_desktop_bridge.policy import AppIdentity
 
 
@@ -46,6 +46,16 @@ class AppLaunchTests(unittest.TestCase):
         ):
             backend.launch_resolved(app, identity)
         app.launch.assert_not_called()
+
+
+    def test_unknown_desktop_id_is_not_found_instead_of_crashing(self) -> None:
+        backend = AppBackend()
+        try:
+            backend._ensure()  # noqa: SLF001
+        except BackendUnavailable as exc:
+            self.skipTest(str(exc))
+        with self.assertRaises(NotFound):
+            backend.resolve("org.example.DoesNotExist-7f3a")
 
 
 if __name__ == "__main__":
